@@ -201,7 +201,7 @@ public static class GameAdvisor {
 		// The best value first: what it costs less what its cards are worth back. Then the caps decide.
 		long left = room;
 
-		foreach (GameCandidate c in priced.OrderBy(static c => c.PriceCents - c.DropValueCents).ThenBy(static c => c.PriceCents).ThenBy(static c => c.App)) {
+		foreach (GameCandidate c in priced.OrderBy(static c => c.PriceCents - c.DropValueCents - c.BoosterValueCents).ThenBy(static c => c.PriceCents).ThenBy(static c => c.App)) {
 			if (c.PriceCents > left) {
 				skipped.Add(c with { Skip = $"it costs {BuyPlan.Money(c.PriceCents, currency)} and {BuyPlan.Money(left, currency)} is what may be spent now" });
 
@@ -217,9 +217,9 @@ public static class GameAdvisor {
 
 	/// <summary>
 	/// What a game's cards are worth back, in the wallet's money: about half its set's cards drop, at what selling one
-	/// pays after Steam's fee, from prices already held. Booster packs it could make are one a day for the game, at what
-	/// their gems would pay as a sack - a rank bonus only, and 0 unless the account makes packs. Both 0 when nothing is
-	/// priced: the game still ranks, just low.
+	/// pays after Steam's fee, from prices already held. A booster pack it could craft is one craft a day - not a free
+	/// pack - so its figure is the profit: the sealed pack's net after Steam's fee, less what the gems it takes would
+	/// fetch as a sack. 0 when that is a loss, or when nothing is priced. Both are estimates, used only to rank.
 	/// </summary>
 	public static (long Drop, long Booster) Value(BotConfig cfg, uint app, SetFinder.KnownSet? set, int currency, DateTime nowUtc) {
 		if ((set == null) || (set.Cards.Count == 0)) {
@@ -250,10 +250,27 @@ public static class GameAdvisor {
 
 		long drop = priced > 0 ? (long) Math.Round(total * (double) drops / priced, MidpointRounding.AwayFromZero) : 0;
 		long booster = 0;
+		int dumpPct = SpareRules.From(cfg).DumpPct;
 
-		if ((cfg.BoosterMake != 0) && (SparePrices.SackPays(currency, SpareRules.From(cfg).DumpPct) is { Cents: > 0 } sack) && (nowUtc - sack.At <= CardFresh)) {
+		if ((cfg.BoosterMake != 0) && (SparePrices.SackPays(currency, dumpPct) is { Cents: > 0 } sack) && (nowUtc - sack.At <= CardFresh)) {
 			int gems = BoosterPick.PackGems(set.Cards.Count);
-			booster = gems > 0 ? (long) Math.Round(Spare.GemsWorth(gems, sack.Cents), MidpointRounding.AwayFromZero) : 0;
+
+			if (gems > 0) {
+				// The gems are spent to craft it, so their sack value is the cost, not the gain.
+				long cost = (long) Math.Round(Spare.GemsWorth(gems, sack.Cents), MidpointRounding.AwayFromZero);
+				string packHash = GemsChoice.PackHash(app, set.Game);
+				long net = 0;
+
+				// The pack's own quote in the wallet's money, or the game's US shortlist at the learned rate.
+				if ((MarketQuotes.Of(packHash, currency) is { Lowest: int buyer and > 0, Sales: >= MinSales } quote) && (nowUtc - quote.When <= CardFresh)) {
+					net = GemsChoice.Receive(quote, dumpPct);
+				} else if ((shortlist is { } list) && shortlistFresh && (list.Items.GetValueOrDefault(packHash) is { Kind: SpareKind.BoosterPack, Cents: > 0 } row) && (rate is double r)
+					&& (ListingPrice.For(new MarketPrice(WalletRate.ToWallet(row.Cents, r), list.When, null, 2), 3, dumpPct).Cents is int listed)) {
+					net = Seller.ReceiveFor(listed);
+				}
+
+				booster = net > cost ? net - cost : 0;
+			}
 		}
 
 		return (drop, booster);

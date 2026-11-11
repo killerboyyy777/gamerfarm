@@ -27514,6 +27514,11 @@ await CommandSweep.RunAsync(Check);
 			&& (NocatFarm.Modules.GameAdvisor.Points(100, 1.0) == 100)
 			&& (NocatFarm.Modules.GameAdvisor.Points(49, null) == 49)
 			&& (NocatFarm.Modules.GameAdvisor.Points(0, 0.9) == 0));
+		NocatFarm.Core.MarketQuotes.Keep(new NocatFarm.Core.MarketQuote("753-Sack of Gems", 20, 60, 62, 100, bgNow.Ticks));
+		NocatFarm.Core.MarketQuotes.Keep(new NocatFarm.Core.MarketQuote(NocatFarm.Modules.GemsChoice.PackHash(10, "Ten"), 20, 80, 80, 5, bgNow.Ticks));
+		(long bgValueDrop, long bgBooster) = NocatFarm.Modules.GameAdvisor.Value(new NocatFarm.Config.BotConfig { BoosterMake = 2 }, 10, bgSet, 20, bgNow);
+		Check("games plan: a booster is worth its sealed sale minus the gems it costs, not the gems alone",
+			bgBooster == 7, $"drop {bgValueDrop}, booster {bgBooster}");
 		Check("games plan: an owned game, a free one, one over the most per game, one in another money and one the store calls owned are all skipped with reasons",
 			bgPlan.Skipped.Any(static c => (c.App == 11) && (c.Skip?.Contains("owns", StringComparison.Ordinal) == true))
 			&& bgPlan.Skipped.Any(static c => (c.App == 12) && (c.Skip?.Contains("free", StringComparison.Ordinal) == true))
