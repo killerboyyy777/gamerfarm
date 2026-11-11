@@ -10,7 +10,14 @@ namespace NocatFarm.Core;
 /// <param name="AgeGated">The store asks for an age check before it will show the game.</param>
 /// <param name="BundleOnly">Not sold as a game on its own: a bundle, DLC, demo, or a game with no price of its own.</param>
 /// <param name="Owned">The account already has it (its library, or the store's own answer).</param>
-public sealed record StoreGame(uint App, string Name, long PriceCents, int Currency, bool Free, bool AgeGated, bool BundleOnly, bool Owned);
+/// <param name="CountsForProfile">Whether the game counts toward the profile's game count and its badge: a paid game,
+/// not one with Steam's "Profile features limited" notice. Free-to-play games and bundles don't count.</param>
+/// <param name="RegionBlocked">Not sold in this account's region: the store gave no price and no package, but it is a
+/// paid game - Steam prices regionally, so this is "not available here", not "priced in another currency".</param>
+/// <param name="BundleApps">When it's a bundle rather than a game: every game it includes (Steam's own list). Empty or
+/// null for a game.</param>
+public sealed record StoreGame(uint App, string Name, long PriceCents, int Currency, bool Free, bool AgeGated, bool BundleOnly, bool Owned,
+	bool CountsForProfile = true, bool RegionBlocked = false, IReadOnlyList<uint>? BundleApps = null);
 
 /// <summary>How one game purchase went. Anything but <see cref="Done"/> spent nothing, or says in its reason that it may have.</summary>
 public enum GameBuyResult {
@@ -57,6 +64,25 @@ public interface IGameStore {
 	/// or <see cref="GameBuyResult.Review"/> and spends nothing.
 	/// </summary>
 	Task<GamePurchase> BuyAsync(StoreGame game, CancellationToken ct);
+
+	/// <summary>
+	/// Whether the game really counts toward the profile's game count: Steam's appdetails can't say it, but its store
+	/// page shows "Profile features limited" (or "Steam is Learning About This Game") for titles that don't. Unreadable
+	/// page: true - it can't prove otherwise, and the paid/free/bundle checks already did their part.
+	/// </summary>
+	Task<bool> CountsForProfileAsync(StoreGame game, CancellationToken ct) => Task.FromResult(game.CountsForProfile);
+
+	/// <summary>
+	/// The bundle ids Steam lists on the game's own store page - bundles a single game can't be found in through the
+	/// store's search. Empty when none, or when the store didn't answer.
+	/// </summary>
+	Task<IReadOnlyList<uint>> BundlesForAsync(uint app, CancellationToken ct) => Task.FromResult<IReadOnlyList<uint>>([]);
+
+	/// <summary>
+	/// One bundle's price and the games it includes, in the wallet's money. Null when the store didn't answer or it isn't
+	/// a bundle of games.
+	/// </summary>
+	Task<StoreGame?> BundleAsync(uint bundleId, int currency, CancellationToken ct) => Task.FromResult<StoreGame?>(null);
 }
 
 /// <summary>
@@ -80,6 +106,163 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 	/// <summary>Buy the game with the wallet balance only - see <see cref="GameCheckout"/>.</summary>
 	public Task<GamePurchase> BuyAsync(StoreGame game, CancellationToken ct) =>
 		new GameCheckout(new BotCheckoutWeb(bot), NocatFarm.Modules.BuyPlan.Cents(bot.Cfg.BuyGamesMaxPrice)).BuyAsync(game, ct);
+
+	/// <summary>Store page reads for the profile-count notice, kept a week per app - it changes with the app, not a look.</summary>
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, (bool Counts, DateTime At)> ProfileKept = new();
+
+	/// <summary>
+	/// The store page's own notice: "Profile features limited" marks a title that doesn't count toward the profile's
+	/// game count and badge; "Steam is Learning About This Game" is the same kind of limit. Undecidable from appdetails,
+	/// so the page is read once a week per app. Null when the page couldn't be read (the caller decides).
+	/// </summary>
+	public static bool? ProfileLimited(string? html) => string.IsNullOrWhiteSpace(html) ? null
+		: html.Contains("Profile Features Limited", StringComparison.OrdinalIgnoreCase)
+			|| html.Contains("Steam is Learning About This Game", StringComparison.OrdinalIgnoreCase);
+
+	/// <summary>
+	/// Whether the game counts toward the profile's game count: a paid, standalone game whose store page doesn't carry
+	/// Steam's profile-features notice. The page is read at most once a week per app; unreadable, the game is counted
+	/// (the paid/free/bundle checks already ruled out what can be known without it).
+	/// </summary>
+	public async Task<bool> CountsForProfileAsync(StoreGame game, CancellationToken ct) {
+		if (!game.CountsForProfile) {
+			return false;
+		}
+
+		// A bundle is a cart item of its own: its page has no profile notice, and the games inside it are the paid games
+		// the advisor already checked. Don't read the page for it.
+		if (game.BundleApps is { Count: > 0 }) {
+			return true;
+		}
+
+		if (ProfileKept.TryGetValue(game.App, out (bool Counts, DateTime At) kept) && (DateTime.UtcNow - kept.At < TimeSpan.FromDays(7))) {
+			return kept.Counts;
+		}
+
+		string country = bot.Country.Length == 2 ? "?cc=" + bot.Country : "?";
+		string url = $"https://store.steampowered.com/app/{game.App.ToString(CultureInfo.InvariantCulture)}/{country}&l=english";
+		(int status, string? body) = await GameCatalog.StoreGetAsync(url, Gap, ct).ConfigureAwait(false);
+		bool? limited = status == 200 ? ProfileLimited(body) : null;
+		bool counts = limited != false;
+
+		if (limited != null) {
+			ProfileKept[game.App] = (counts, DateTime.UtcNow);
+		}
+
+		return counts;
+	}
+
+	/// <summary>Bundle ids read from a game's store page, kept a week per app - the page changes with the app, not a look.</summary>
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, (IReadOnlyList<uint> Ids, DateTime At)> BundleKept = new();
+
+	/// <summary>The store page's own bundle links: <c>bundleid="231"</c>. Up to four, or none.</summary>
+	public static IReadOnlyList<uint> BundleIds(string? html) {
+		if (string.IsNullOrWhiteSpace(html)) {
+			return [];
+		}
+
+		return [.. System.Text.RegularExpressions.Regex.Matches(html, "bundleid=\"(\\d+)\"", System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+			.Select(static m => uint.TryParse(m.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out uint id) ? id : 0)
+			.Where(static id => id != 0).Distinct().Take(4)];
+	}
+
+	/// <summary>
+	/// The bundles the game's store page names, read at most once a week per app. Empty when the page doesn't name one or
+	/// couldn't be read - a bundle is only ever an extra candidate, never a reason to fail a look.
+	/// </summary>
+	public async Task<IReadOnlyList<uint>> BundlesForAsync(uint app, CancellationToken ct) {
+		if (BundleKept.TryGetValue(app, out (IReadOnlyList<uint> Ids, DateTime At) kept) && (DateTime.UtcNow - kept.At < TimeSpan.FromDays(7))) {
+			return kept.Ids;
+		}
+
+		string country = bot.Country.Length == 2 ? "?cc=" + bot.Country : "?";
+		string url = $"https://store.steampowered.com/app/{app.ToString(CultureInfo.InvariantCulture)}/{country}&l=english";
+		(int status, string? body) = await GameCatalog.StoreGetAsync(url, Gap, ct).ConfigureAwait(false);
+		IReadOnlyList<uint> ids = status == 200 ? BundleIds(body) : [];
+
+		if (status == 200) {
+			BundleKept[app] = (ids, DateTime.UtcNow);
+		}
+
+		return ids;
+	}
+
+	/// <summary>
+	/// One bundle: its name, its price in the wallet's money, and the games it includes - from Steam's own store browse
+	/// answer, which (unlike appdetails) knows bundles. Null when it isn't a bundle of games or the store didn't answer.
+	/// </summary>
+	public async Task<StoreGame?> BundleAsync(uint bundleId, int currency, CancellationToken ct) {
+		string country = bot.Country.Length == 2 ? bot.Country : "US";
+		string json = JsonSerializer.Serialize(new {
+			ids = new object[] { new { bundleid = bundleId } },
+			context = new { language = "english", country_code = country, steam_realm = 1 },
+			data_request = new { include_basic_info = true }
+		});
+		string url = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json=" + Uri.EscapeDataString(json);
+		(int status, string? body) = await GameCatalog.StoreGetAsync(url, Gap, ct).ConfigureAwait(false);
+
+		return status == 200 ? ParseBundle(body, bundleId, currency) : null;
+	}
+
+	/// <summary>
+	/// A store browse answer for one bundle: the first <c>store_items</c> entry of type 2, its name, its final price in
+	/// cents, and its <c>included_appids</c>. Null when it isn't that bundle or includes no game.
+	/// </summary>
+	public static StoreGame? ParseBundle(string? json, uint bundleId, int currency) {
+		if (string.IsNullOrWhiteSpace(json)) {
+			return null;
+		}
+
+		try {
+			using JsonDocument doc = JsonDocument.Parse(json);
+
+			if (!doc.RootElement.TryGetProperty("response", out JsonElement response) || (response.ValueKind != JsonValueKind.Object)
+				|| !response.TryGetProperty("store_items", out JsonElement items) || (items.ValueKind != JsonValueKind.Array)) {
+				return null;
+			}
+
+			foreach (JsonElement item in items.EnumerateArray()) {
+				if ((item.ValueKind != JsonValueKind.Object)
+					|| !item.TryGetProperty("item_type", out JsonElement type) || !type.TryGetInt32(out int kind) || (kind != 2)
+					|| !item.TryGetProperty("included_appids", out JsonElement included) || (included.ValueKind != JsonValueKind.Array)) {
+					continue;
+				}
+
+				List<uint> apps = [.. included.EnumerateArray().Select(static a => a.TryGetUInt32(out uint app) ? app : 0).Where(static app => app != 0).Distinct()];
+
+				if (apps.Count == 0) {
+					continue;
+				}
+
+				string name = item.TryGetProperty("name", out JsonElement n) && (n.ValueKind == JsonValueKind.String) ? (n.GetString() ?? "").Trim() : "";
+				long price = 0;
+
+				if (item.TryGetProperty("final_price_in_cents", out JsonElement p) || item.TryGetProperty("final_price", out p)) {
+					price = p.ValueKind switch {
+						JsonValueKind.Number when p.TryGetInt64(out long cents) => cents,
+						JsonValueKind.String when long.TryParse(p.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long cents) => cents,
+						_ => 0
+					};
+				}
+
+				if ((price <= 0) && item.TryGetProperty("best_purchase_option", out JsonElement option) && (option.ValueKind == JsonValueKind.Object)
+					&& option.TryGetProperty("final_price_in_cents", out JsonElement op)) {
+					price = op.ValueKind switch {
+						JsonValueKind.Number when op.TryGetInt64(out long cents) => cents,
+						JsonValueKind.String when long.TryParse(op.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out long cents) => cents,
+						_ => 0
+					};
+				}
+
+				return new StoreGame(bundleId, name, Math.Max(0, price), currency, false, false, false, false,
+					CountsForProfile: true, RegionBlocked: price <= 0, BundleApps: apps);
+			}
+
+			return null;
+		} catch (JsonException) {
+			return null;
+		}
+	}
 
 	/// <summary>
 	/// The package that sells an app on its own, from a full appdetails answer (the filtered ones leave package_groups
@@ -171,12 +354,14 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 				currency = p.TryGetProperty("currency", out JsonElement c) && (c.ValueKind == JsonValueKind.String) ? Code(c.GetString()) : 0;
 			}
 
-			// A game is sold as a game. Anything else here (a bundle, a DLC, a demo) isn't bought on its own; neither is a
-			// game with no price and no package that could sell it.
+			// A game is sold as a game. Anything else here (a bundle, a DLC, a demo) isn't bought on its own. A paid game
+			// with no price and no package is one this account's region can't buy - Steam prices regionally, so it never
+			// comes back in another currency.
 			bool bundle = (type.Length > 0) && !type.Equals("game", StringComparison.OrdinalIgnoreCase);
-			bundle |= !free && !age && (price <= 0) && !HasPackage(data);
+			bool region = (type.Length == 0 || type.Equals("game", StringComparison.OrdinalIgnoreCase))
+				&& !free && !age && (price <= 0) && !HasPackage(data);
 
-			return new StoreGame(app, name, price, currency, free, age, bundle, owned);
+			return new StoreGame(app, name, price, currency, free, age, bundle, owned, CountsForProfile: !free && !bundle && !region, RegionBlocked: region);
 		} catch (JsonException) {
 			return null;
 		}

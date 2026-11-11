@@ -120,7 +120,7 @@ public static partial class Commands {
 			return string.Join(Environment.NewLine,
 				$"{bot.Name}: buying games is on - it may spend the Steam wallet by itself, within its limits. Only the wallet balance is ever spent: no card, no other payment method, no top-up.",
 				GamesLimits(bot),
-				$"{bot.Name}: 'games preview {bot.Name}' shows what it would buy; 'games do {bot.Name}' buys now (it also needs \"{Settings.FindBot(nameof(BotConfig.BuyGamesUnattended))?.Label ?? "Buy games without asking"}\" on), one look at a time - there is no automatic loop yet; 'games off {bot.Name}' turns it off.");
+				$"{bot.Name}: 'games preview {bot.Name}' shows what it would buy; 'games do {bot.Name}' buys now (it also needs \"{Settings.FindBot(nameof(BotConfig.BuyGamesUnattended))?.Label ?? "Buy games without asking"}\" on), one look at a time; the automatic look runs every {Math.Clamp(bot.Cfg.BuyGamesCheckHours, 1, 168)}h while that is on; 'games off {bot.Name}' turns it off.");
 		}
 
 		if (Pick(mgr, who == null ? [] : [who], out string? problem) is not { } bots) {
@@ -178,162 +178,7 @@ public static partial class Commands {
 	/// "most per game", the wallet balance, and the paused/market-hold/scam-watch gates are all checked first; each
 	/// attempt is written down as pending before it is sent. A failure stops the run rather than trying the next game.
 	/// </summary>
-	private static async Task<string> GamesBuyAsync(Bot bot, CancellationToken ct) {
-		string name = bot.Name;
-		BuyGamesLedger ledger = BuyGamesLedger.Of(name);
-
-		if (!bot.Cfg.BuyGames || !ledger.Ok) {
-			return $"{name}: buying games is off - nothing was bought. 'games preview {name}' shows what it would buy; 'games on {name} yes' turns it on.";
-		}
-
-		if (ledger.Unreadable) {
-			return $"{name}: {ledger.UnreadableText}";
-		}
-
-		if (!bot.Cfg.BuyGamesUnattended) {
-			return $"{name}: buying games by itself is off, and there is no way to ask you here - nothing was bought. "
-				+ $"Turn it on first:  set {name} {nameof(BotConfig.BuyGamesUnattended)} true";
-		}
-
-		if (bot.Paused) {
-			return $"{name}: it's paused - nothing was bought.";
-		}
-
-		if (MarketHold.Blocked(bot) is { } market) {
-			return $"{name}: {market.ToEnglish()}";
-		}
-
-		if (ScamWatch.HeldBack(bot) is { } held) {
-			return $"{name}: {held}";
-		}
-
-		GameAdvisor.Plan plan = await GameAdvisor.ForAccountAsync(bot, ct).ConfigureAwait(false);
-
-		if (plan.Problem.Length > 0) {
-			return GamesSaid(bot, plan) + Environment.NewLine + $"{name}: nothing was bought.";
-		}
-
-		if (plan.Candidates.Count == 0) {
-			return GamesSaid(bot, plan) + Environment.NewLine + $"{name}: nothing was bought - there was nothing to buy.";
-		}
-
-		int currency = plan.Currency;
-		string M(long cents) => BuyPlan.Money(cents, currency);
-
-		long dayLimit = BuyPlan.Limit(bot.Cfg.BuyGamesDailyLimit);
-		long weekLimit = BuyPlan.Limit(bot.Cfg.BuyGamesWeeklyLimit);
-		long keep = GameAdvisor.Keep(bot.Cfg);
-		// A robot buys every game that fits in the look; the setting paces a human-mode account only.
-		int most = bot.Cfg.LegitMode ? Math.Clamp(bot.Cfg.BuyGamesPerLook, 1, 10) : int.MaxValue;
-		DateTime now = DateTimeOffset.FromUnixTimeSeconds(Confirmations.SteamTimeNow).UtcDateTime;   // the limits go by Steam's clock
-		IGameStore store = new SteamGameStore(bot);
-		List<string> lines = [];
-		int bought = 0;
-		long paid = 0;
-
-		// Cheapest first: several purchases in one look spend as little as they can.
-		foreach (GameAdvisor.GameCandidate candidate in plan.Candidates.OrderBy(static c => c.PriceCents).ThenBy(static c => c.App).Take(most)) {
-			if (ct.IsCancellationRequested) {
-				lines.Add($"{name}: stopped before anything else was sent");
-
-				break;
-			}
-
-			// The same gates again before every purchase: a pause or a market block can land while the last one runs.
-			if (bot.Paused) {
-				lines.Add($"{name}: paused before the next game - nothing else was bought");
-
-				break;
-			}
-
-			if (MarketHold.Blocked(bot) is { } hold) {
-				lines.Add($"{name}: {hold.ToEnglish()}");
-
-				break;
-			}
-
-			if (ScamWatch.HeldBack(bot) is { } scam) {
-				lines.Add($"{name}: {scam}");
-
-				break;
-			}
-
-			long left = Math.Min(Math.Min(dayLimit - ledger.SpentSince(now.AddDays(-1)), weekLimit - ledger.SpentSince(now.AddDays(-7))),
-				plan.Wallet - keep - paid);
-
-			if (candidate.PriceCents > left) {
-				lines.Add($"{name}: {candidate.Name} (app {candidate.App}) waits - {M(Math.Max(0, left))} is what may be spent now");
-
-				break;
-			}
-
-			// Written down before it is sent: counted as spent until its outcome is known, so a crash mid-purchase can
-			// never buy past the limits.
-			BuyGamesLedger.Entry pending = new(now, candidate.PriceCents, currency, candidate.App, candidate.Name, Pending: true);
-
-			if (!ledger.Add(pending)) {
-				lines.Add($"{name}: the list of what it spent couldn't be saved - nothing was bought");
-
-				break;
-			}
-
-			StoreGame game = new(candidate.App, candidate.Name, candidate.PriceCents, candidate.Currency, false, false, false, false);
-			GamePurchase answer;
-
-			try {
-				answer = await store.BuyAsync(game, ct).ConfigureAwait(false);
-			} catch (OperationCanceledException) when (ct.IsCancellationRequested) {
-				// Cut off mid-request: it may have reached Steam, so the entry stays pending and keeps counting as spent.
-				lines.Add($"{name}: stopped while buying {candidate.Name} (app {candidate.App}) - it's counted as spent until a later look finds out");
-
-				break;
-			} catch (Exception e) {
-				// The request may have reached Steam: the entry stays pending and keeps counting as spent.
-				Log.Info(new Said("{0}: buying {1} (app {2}) failed: {3}", name, candidate.Name, candidate.App, Log.Describe(e)), name);
-				lines.Add($"{name}: buying {candidate.Name} (app {candidate.App}) failed - {Log.Describe(e)}; it's counted as spent until a later look finds out");
-
-				break;
-			}
-
-			if (answer.Result == GameBuyResult.Done) {
-				long cost = answer.PaidCents > 0 ? answer.PaidCents : candidate.PriceCents;
-				ledger.Replace(pending, pending with { Cents = cost, Pending = false, TransId = answer.TransId });
-				bought++;
-				paid += cost;
-				lines.Add($"{name}: bought {candidate.Name} (app {candidate.App}) for {M(cost)} - paid from the wallet balance");
-				Log.Info(new Said("{0}: bought {1} (app {2}) for {3}", name, candidate.Name, candidate.App, M(cost)), name);
-			} else {
-				// Money first: anything that may have spent stays in the list as pending.
-				if (answer.Spent) {
-					// Sent but not confirmed: keep the planned amount when Steam didn't say what it charged, so the
-					// day's and week's limits still count it.
-					ledger.Replace(pending, pending with { Cents = answer.PaidCents > 0 ? answer.PaidCents : pending.Cents, Pending = true, TransId = answer.TransId });
-				} else {
-					ledger.Replace(pending, null);
-				}
-
-				lines.Add($"{name}: didn't buy {candidate.Name} (app {candidate.App}) - {answer.Reason}");
-				Log.Info(new Said("{0}: didn't buy {1} (app {2}) - {3}", name, candidate.Name, candidate.App, answer.Reason), name);
-
-				break;   // one failure a look: nothing else is tried on a guess
-			}
-		}
-
-		DateTime after = DateTimeOffset.FromUnixTimeSeconds(Confirmations.SteamTimeNow).UtcDateTime;
-
-		lines.Add(bought == 0
-			? $"{name}: nothing was bought this time."
-			: $"{name}: bought {bought} game(s) for {M(paid)} - {M(ledger.SpentSince(after.AddDays(-1)))} of {BuyPlan.LimitSaid(dayLimit, currency)} today, "
-				+ $"{M(ledger.SpentSince(after.AddDays(-7)))} of {BuyPlan.LimitSaid(weekLimit, currency)} this week");
-
-		if (plan.Candidates.Count > most) {
-			lines.Add($"{name}: {plan.Candidates.Count - most} more would follow at the next look");
-		}
-
-		Log.Info(new Said("{0}: buying games now bought {1} for {2}", name, bought, M(paid)), name);
-
-		return string.Join(Environment.NewLine, lines);
-	}
+	public static Task<string> GamesBuyAsync(Bot bot, CancellationToken ct) => GameBuyer.BuyNowAsync(bot, ct);
 
 	/// <summary>'games preview': each account's look, said plainly. Nothing is bought or reserved.</summary>
 	private static Task<string> GamesLookAsync(IReadOnlyList<Bot> bots) {
@@ -379,7 +224,8 @@ public static partial class Commands {
 					: $"its cards aren't priced here, so what they pay back isn't counted (they drop after about {hours}h of play)";
 				string booster = c.BoosterValueCents > 0 ? $" and about {M(c.BoosterValueCents)} a day from booster packs" : "";
 
-				lines.Add($"{name}: would buy {c.Name} (app {c.App}) for {M(c.PriceCents)} - {drop}{booster}; about {c.Points} points");
+				lines.Add($"{name}: would buy {c.Name} ({c.App}) for {M(c.PriceCents)} - {drop}{booster}; about {c.Points} points"
+					+ (c.BundleApps is { Count: > 1 } games ? $"; a bundle of {games.Count} games" : ""));
 			}
 
 			lines.Add($"{name}: {plan.Candidates.Count} game(s) would be bought for {M(plan.Candidates.Sum(static c => c.PriceCents))}.");
@@ -397,7 +243,7 @@ public static partial class Commands {
 			lines.Add($"{name}: buying games is on, but buying without asking is off, so nothing is bought by itself. "
 				+ $"Turn it on with  set {name} {nameof(BotConfig.BuyGamesUnattended)} true");
 		} else {
-			lines.Add($"{name}: buying games is on; 'games do {name}' buys these now, cheapest first, one at a time (there is no automatic loop yet).");
+			lines.Add($"{name}: buying games is on; 'games do {name}' buys these now, cheapest first, one at a time, and the automatic look runs every {Math.Clamp(b.Cfg.BuyGamesCheckHours, 1, 168)}h while \"Buy games without asking\" is on.");
 		}
 
 		lines.Add($"{name}: nothing was bought - a preview only looks; buying is only ever paid from the Steam wallet balance.");

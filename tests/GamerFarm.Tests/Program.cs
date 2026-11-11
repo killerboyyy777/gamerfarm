@@ -3990,6 +3990,20 @@ if (Environment.GetEnvironmentVariable("NOCAT_BANPAGES") is { Length: > 0 } banP
 	Check("free games: the store's name comes without the space it sometimes ends in",
 		((string) storeName.Invoke(null, ["{\"name\":\"Train Sim World® 7 \"}", "sub 1768268"])! == "Train Sim World® 7")
 		&& ((string) storeName.Invoke(null, ["{\"name\":\"  \"}", "sub 1768268"])! == "sub 1768268"));
+
+	Check("free games: all free DLC is a separate mode, named in its choices",
+		NocatFarm.Modules.FreeClaims.GamesAndAllDlc == 3
+		&& (NocatFarm.Config.Settings.FindBot("ClaimFree")?.Choices?.Contains("3 games and all their free DLC", StringComparison.Ordinal) ?? false));
+
+	Check("free games: a game's DLC list is read from its appdetails answer",
+		NocatFarm.Modules.FreeGames.DlcIds("{\"10\":{\"success\":true,\"data\":{\"dlc\":[11,12,\"13\"]}}}").SequenceEqual<uint>([11u, 12u, 13u])
+		&& (NocatFarm.Modules.FreeGames.DlcIds("{\"10\":{\"success\":true,\"data\":{}}}").Count == 0));
+
+	Check("free games: a permanently free DLC is free, a 100% promo is free, a paid one is not",
+		NocatFarm.Modules.FreeGames.DlcWorth("{\"11\":{\"success\":true,\"data\":{\"type\":\"dlc\",\"name\":\"Pack\",\"is_free\":true}}}", 11) is (true, "Pack")
+		&& NocatFarm.Modules.FreeGames.DlcWorth("{\"11\":{\"success\":true,\"data\":{\"type\":\"dlc\",\"name\":\"Promo\",\"price_overview\":{\"discount_percent\":100,\"final\":0}}}}", 11) is (true, _)
+		&& NocatFarm.Modules.FreeGames.DlcWorth("{\"11\":{\"success\":true,\"data\":{\"type\":\"dlc\",\"name\":\"Paid\",\"price_overview\":{\"discount_percent\":0,\"final\":199}}}}", 11) is (false, _)
+		&& NocatFarm.Modules.FreeGames.DlcWorth(null, 11) == null);
 }
 
 // ── you on the account: what shows on it waits, what nobody sees carries on ─────────────────────────────────────
@@ -27447,7 +27461,8 @@ await CommandSweep.RunAsync(Check);
 		Check("games: off by default and never unattended - 5.00 a day, 20.00 a week, 1.00 a game, a look every 24 hours",
 			!bgCfg.BuyGames && !bgCfg.BuyGamesUnattended && (bgCfg.BuyGamesDailyLimit == 5f) && (bgCfg.BuyGamesWeeklyLimit == 20f)
 			&& (bgCfg.BuyGamesMaxPrice == 1f) && (bgCfg.BuyGamesCheckHours == 24) && (bgCfg.BuyGamesPerLook == 1)
-			&& (bgCfg.BuyGamesGapMinMinutes == 30) && (bgCfg.BuyGamesGapMaxMinutes == 90) && (bgCfg.BuyGamesApps.Count == 0),
+			&& (bgCfg.BuyGamesGapMinMinutes == 30) && (bgCfg.BuyGamesGapMaxMinutes == 90) && (bgCfg.BuyGamesApps.Count == 0)
+			&& (bgCfg.BuyGamesPriority == 0) && (bgCfg.BuyGamesDropBasis == 0),
 			$"{bgCfg.BuyGamesDailyLimit} {bgCfg.BuyGamesWeeklyLimit} {bgCfg.BuyGamesMaxPrice} {bgCfg.BuyGamesCheckHours}");
 		var bgDef = NocatFarm.Config.Settings.FindBot("BuyGames");
 		var bgUnattendedDef = NocatFarm.Config.Settings.FindBot("BuyGamesUnattended");
@@ -27516,7 +27531,7 @@ await CommandSweep.RunAsync(Check);
 			&& (NocatFarm.Modules.GameAdvisor.Points(0, 0.9) == 0));
 		NocatFarm.Core.MarketQuotes.Keep(new NocatFarm.Core.MarketQuote("753-Sack of Gems", 20, 60, 62, 100, bgNow.Ticks));
 		NocatFarm.Core.MarketQuotes.Keep(new NocatFarm.Core.MarketQuote(NocatFarm.Modules.GemsChoice.PackHash(10, "Ten"), 20, 80, 80, 5, bgNow.Ticks));
-		(long bgValueDrop, long bgBooster) = NocatFarm.Modules.GameAdvisor.Value(new NocatFarm.Config.BotConfig { BoosterMake = 2 }, 10, bgSet, 20, bgNow);
+		(long bgValueDrop, long bgValueWorst, long bgBooster) = NocatFarm.Modules.GameAdvisor.Value(new NocatFarm.Config.BotConfig { BoosterMake = 2 }, 10, bgSet, 20, bgNow);
 		Check("games plan: a booster is worth its sealed sale minus the gems it costs, not the gems alone",
 			bgBooster == 7, $"drop {bgValueDrop}, booster {bgBooster}");
 		Check("booster crafting: the same profit is what the profitable-only option goes by",
@@ -27533,6 +27548,59 @@ await CommandSweep.RunAsync(Check);
 			&& bgAutoSrc.Contains("if (ownToOpen) {\n\t\t\tAutoMemory.Add(pack);", StringComparison.Ordinal)
 			&& bgAutoSrc.Contains("AutoMemory.AddMade(maybe);", StringComparison.Ordinal)
 			&& bgAutoSrc.Contains("it follows", StringComparison.Ordinal));
+		// ── the priority: as many games as the money allows, or only games whose drops pay for them ──
+		var bgCards20 = Enumerable.Range(1, 5).Select(static i => $"20-Card {i}").ToList();
+		var bgSet20 = new NocatFarm.Core.SetFinder.KnownSet(20, "Twenty", bgCards20, bgCards20.ToDictionary(static c => c, static _ => 5), 5, bgNow);
+
+		for (int i = 0; i < bgCards20.Count; i++) {
+			NocatFarm.Core.MarketQuotes.Keep(new NocatFarm.Core.MarketQuote(bgCards20[i], 20, 5 + i, 5 + i, 8, bgNow.Ticks));
+		}
+
+		(long bgDrop20, long bgWorst20, _) = NocatFarm.Modules.GameAdvisor.Value(new NocatFarm.Config.BotConfig(), 20, bgSet20, 20, bgNow);
+		Check("games plan: the worst pull counts the cheapest card every time - twice for a five-card set",
+			(bgDrop20 == 10) && (bgWorst20 == 6), $"average {bgDrop20}, worst {bgWorst20}");
+
+		var bgTier = new NocatFarm.Core.BuyGamesLedger(BgState("buygame-tier.json"));
+		var bgTierStore = new FakeGameStore();
+		bgTierStore.Games[20] = new NocatFarm.Core.StoreGame(20, "Twenty", 7, 20, false, false, false, false);
+		var bgMore = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f
+		}, 20, 1000, bgTier, bgTierStore, static _ => false, [bgSet20], bgNow, CancellationToken.None);
+		var bgLevels = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f, BuyGamesPriority = 1
+		}, 20, 1000, bgTier, bgTierStore, static _ => false, [bgSet20], bgNow, CancellationToken.None);
+		var bgWorst = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f, BuyGamesPriority = 1, BuyGamesDropBasis = 1
+		}, 20, 1000, bgTier, bgTierStore, static _ => false, [bgSet20], bgNow, CancellationToken.None);
+		Check("games plan: more games buys it; levels keeps it only when the average drops beat its price; the worst pull is stricter",
+			(bgMore.Candidates.Count == 1) && (bgLevels.Candidates.Count == 1) && (bgWorst.Candidates.Count == 0)
+			&& bgWorst.Skipped.Any(static c => (c.App == 20) && (c.Skip?.Contains("at worst", StringComparison.Ordinal) == true)),
+			$"more {bgMore.Candidates.Count}, levels {bgLevels.Candidates.Count}, worst {bgWorst.Candidates.Count}");
+		Check("games plan: the two priorities are settings - more games by default, levels with the average or the worst pull",
+			NocatFarm.Config.Settings.FindBot("BuyGamesPriority") is { Choices: "0 more games - as many as the money allows | 1 levels - only when the drops are worth more", ShowWhen: "BuyGames=true" }
+			&& NocatFarm.Config.Settings.FindBot("BuyGamesDropBasis") is { Advanced: true, ShowWhen: "BuyGamesPriority=1" });
+
+		// Same two games: the cheaper one wins "more games"; the one that costs least against its drops wins "levels".
+		var bgCards21 = Enumerable.Range(1, 5).Select(static i => $"21-Card {i}").ToList();
+		var bgSet21 = new NocatFarm.Core.SetFinder.KnownSet(21, "Twenty One", bgCards21, bgCards21.ToDictionary(static c => c, static _ => 5), 5, bgNow);
+
+		foreach (string card in bgCards21) {
+			NocatFarm.Core.MarketQuotes.Keep(new NocatFarm.Core.MarketQuote(card, 20, 5, 5, 8, bgNow.Ticks));
+		}
+
+		var bgOrder = new FakeGameStore();
+		bgOrder.Games[20] = new NocatFarm.Core.StoreGame(20, "Twenty", 7, 20, false, false, false, false);
+		bgOrder.Games[21] = new NocatFarm.Core.StoreGame(21, "Twenty One", 5, 20, false, false, false, false);
+		var bgOrderMore = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f
+		}, 20, 1000, bgTier, bgOrder, static _ => false, [bgSet20, bgSet21], bgNow, CancellationToken.None);
+		var bgOrderLevels = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f, BuyGamesPriority = 1
+		}, 20, 1000, bgTier, bgOrder, static _ => false, [bgSet20, bgSet21], bgNow, CancellationToken.None);
+		Check("games plan: more games takes the cheapest first; levels takes the one that costs least against its drops",
+			(bgOrderMore.Candidates.Count == 2) && (bgOrderMore.Candidates[0].App == 21)
+			&& (bgOrderLevels.Candidates.Count == 2) && (bgOrderLevels.Candidates[0].App == 20),
+			$"more {string.Join(",", bgOrderMore.Candidates.Select(static c => c.App))}; levels {string.Join(",", bgOrderLevels.Candidates.Select(static c => c.App))}");
 		Check("games plan: an owned game, a free one, one over the most per game, one in another money and one the store calls owned are all skipped with reasons",
 			bgPlan.Skipped.Any(static c => (c.App == 11) && (c.Skip?.Contains("owns", StringComparison.Ordinal) == true))
 			&& bgPlan.Skipped.Any(static c => (c.App == 12) && (c.Skip?.Contains("free", StringComparison.Ordinal) == true))
@@ -27568,6 +27636,133 @@ await CommandSweep.RunAsync(Check);
 
 		var bgUnreadablePlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(bgAdCfg, 20, 1000, bgBad, bgStore, static _ => false, [bgSet], bgNow, CancellationToken.None);
 		Check("games plan: the unreadable spending list stops it and says which file", bgUnreadablePlan.Problem.Length > 0 && bgUnreadablePlan.Candidates.Count == 0, bgUnreadablePlan.Problem);
+
+		// ── Steam Points count toward badge levels when they are spent there ──
+		var bgPointsStore = new FakeGameStore();
+		bgPointsStore.Games[20] = new NocatFarm.Core.StoreGame(20, "Twenty", 10, 20, false, false, false, false);
+		var bgPointsCfg = new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f, BuyGamesPriority = 1, SpendPoints = true
+		};
+		var bgNoPointsPlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(bgPointsCfg, 20, 1000, bgTier, bgPointsStore, static _ => false, [bgSet20], bgNow, CancellationToken.None);
+		var bgPointsPlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(bgPointsCfg, 20, 1000, bgTier, bgPointsStore, static _ => false, [bgSet20], bgNow, CancellationToken.None,
+			levelCents: 200);
+		Check("games plan: points earned pay toward badge levels in levels mode when SpendPoints is on - 10 points at 2.00 a level is 0.02",
+			(bgNoPointsPlan.Candidates.Count == 0) && (bgPointsPlan.Candidates.Count == 1)
+			&& bgPointsPlan.Candidates[0] is { App: 20, Points: 10, PointsValueCents: 2 }
+			&& (bgPointsPlan.Room == bgNoPointsPlan.Room),
+			$"without {bgNoPointsPlan.Candidates.Count}, with {bgPointsPlan.Candidates.Count}: {string.Join(" | ", bgPointsPlan.Candidates)}");
+
+		var bgPointsOffPlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(
+			new NocatFarm.Config.BotConfig {
+				BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f, BuyGamesPriority = 1, SpendPoints = false
+			}, 20, 1000, bgTier, bgPointsStore, static _ => false, [bgSet20], bgNow, CancellationToken.None, levelCents: 200);
+		Check("games plan: points only count while spending them on badges is on", bgPointsOffPlan.Candidates.Count == 0,
+			string.Join(" | ", bgPointsOffPlan.Candidates));
+
+		// ── more games: only games with card drops, when that option is on ──
+		var bgDropStore = new FakeGameStore();
+		bgDropStore.Games[20] = new NocatFarm.Core.StoreGame(20, "Twenty", 7, 20, false, false, false, false);
+		bgDropStore.Games[22] = new NocatFarm.Core.StoreGame(22, "No Cards", 5, 20, false, false, false, false);
+		var bgDropCfg = new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f, BuyGamesOnlyCardDrops = true
+		};
+		var bgOnlyDrops = await NocatFarm.Modules.GameAdvisor.MakeAsync(bgDropCfg, 20, 1000, bgTier, bgDropStore, static _ => false, [bgSet20], bgNow, CancellationToken.None);
+		var bgAllGames = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig {
+				BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f, BuyGamesOnlyCardDrops = false
+			}, 20, 1000, bgTier, bgDropStore, static _ => false, [bgSet20], bgNow, CancellationToken.None);
+		Check("games plan: only games with card drops skips a game with no known set - and is on by default",
+			bgOnlyDrops.Candidates.All(static c => c.App == 20) && (bgOnlyDrops.Candidates.Count == 1)
+			&& bgOnlyDrops.Skipped.Any(static c => (c.App == 22) && (c.Skip?.Contains("card drops", StringComparison.Ordinal) == true))
+			&& (bgAllGames.Candidates.Count == 2)
+			&& new NocatFarm.Config.BotConfig().BuyGamesOnlyCardDrops
+			&& NocatFarm.Config.Settings.FindBot("BuyGamesOnlyCardDrops") is { Advanced: true, ShowWhen: "BuyGamesPriority=0" },
+			$"only {string.Join(",", bgOnlyDrops.Candidates.Select(static c => c.App))}; all {string.Join(",", bgAllGames.Candidates.Select(static c => c.App))}");
+
+		// ── profile count: free games, bundles and "Profile features limited" titles don't count ──
+		Check("games plan: a paid game counts toward the profile, a free one doesn't, and the store page's profile notice is read",
+			NocatFarm.Core.SteamGameStore.Parse("{\"20\":{\"success\":true,\"data\":{\"name\":\"G\",\"type\":\"game\",\"is_free\":false,\"price_overview\":{\"initial\":100,\"final\":100,\"currency\":\"CAD\"}}}}", 20) is { CountsForProfile: true }
+			&& NocatFarm.Core.SteamGameStore.Parse("{\"20\":{\"success\":true,\"data\":{\"name\":\"G\",\"type\":\"game\",\"is_free\":true}}}", 20) is { CountsForProfile: false }
+			&& NocatFarm.Core.SteamGameStore.ProfileLimited("<div>Profile Features Limited</div>") == true
+			&& NocatFarm.Core.SteamGameStore.ProfileLimited("<div>Steam is Learning About This Game</div>") == true
+			&& NocatFarm.Core.SteamGameStore.ProfileLimited("<html>a normal game</html>") == false
+			&& NocatFarm.Core.SteamGameStore.Parse("{\"20\":{\"success\":true,\"data\":{\"name\":\"G\",\"type\":\"game\",\"is_free\":false}}}", 20) is { RegionBlocked: true, BundleOnly: false, CountsForProfile: false });
+
+		var bgProfileStore = new FakeGameStore();
+		bgProfileStore.NotCounting.Add(23);
+		bgProfileStore.Games[23] = new NocatFarm.Core.StoreGame(23, "Limited", 50, 20, false, false, false, false);
+		var bgProfilePlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f
+		}, 20, 1000, bgTier, bgProfileStore, static _ => false, [], bgNow, CancellationToken.None);
+		Check("games plan: a game that doesn't count toward the profile is skipped with the reason",
+			bgProfilePlan.Candidates.Count == 0 && bgProfilePlan.Skipped.Any(static c => (c.App == 23) && (c.Skip?.Contains("profile", StringComparison.Ordinal) == true)),
+			string.Join(" | ", bgProfilePlan.Skipped.Select(static c => $"{c.App}:{c.Skip}")));
+
+		// Bundles: one cart item holding several games - its drops, crafts and points are the sum of theirs.
+		var bgBundleStore = new FakeGameStore();
+		bgBundleStore.Games[20] = new NocatFarm.Core.StoreGame(20, "Twenty", 7, 20, false, false, false, false);
+		bgBundleStore.Games[21] = new NocatFarm.Core.StoreGame(21, "Twenty One", 5, 20, false, false, false, false);
+		bgBundleStore.Bundles[21] = [900u];
+		bgBundleStore.BundleGames[900] = new NocatFarm.Core.StoreGame(900, "Pair", 3, 20, false, false, false, false, BundleApps: [20, 21]);
+		var bgBundlePlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f
+		}, 20, 1000, bgTier, bgBundleStore, static _ => false, [bgSet20, bgSet21], bgNow, CancellationToken.None);
+		Check("games plan: a bundle is one candidate worth the sum of its games, and its games aren't bought too",
+			bgBundlePlan.Candidates.Count == 1 && bgBundlePlan.Candidates[0] is { App: 900, PriceCents: 3, BundleApps.Count: 2 }
+			&& (bgBundlePlan.Candidates[0].DropValueCents > 0) && (bgBundleStore.BundleLookups > 0),
+			string.Join(" | ", bgBundlePlan.Candidates.Select(static c => $"{c.App}:{c.PriceCents}:{c.BundleApps?.Count}")));
+
+		var bgBundleParsed = NocatFarm.Core.SteamGameStore.ParseBundle(
+			"{\"response\":{\"store_items\":[{\"item_type\":2,\"id\":900,\"name\":\"Pair\",\"included_appids\":[20,21],\"final_price_in_cents\":\"300\"}]}}", 900, 20);
+		Check("games: a bundle reads its games and price from the store's browse answer",
+			bgBundleParsed is { App: 900, Name: "Pair", PriceCents: 300, BundleApps.Count: 2 } && (bgBundleParsed.BundleApps![0] == 20),
+			$"{bgBundleParsed}");
+
+		// ── the automatic loop: the switch, its go-ahead and "without asking" together ──
+		var bgLoopBot = new NocatFarm.Core.Bot("gb-loop", new NocatFarm.Config.BotConfig { BuyGames = true, BuyGamesUnattended = true });
+		NocatFarm.Core.BuyGamesLedger.Of("gb-loop").SetOk(true);
+		Check("games loop: only runs with buying games on, its go-ahead and buying without asking",
+			NocatFarm.Modules.GameBuyer.On(bgLoopBot)
+			&& !NocatFarm.Modules.GameBuyer.On(new NocatFarm.Core.Bot("gb-loop2", new NocatFarm.Config.BotConfig { BuyGames = true }))
+			&& NocatFarm.Modules.GameBuyer.On(new NocatFarm.Core.Bot("gb-loop", new NocatFarm.Config.BotConfig { BuyGames = true, BuyGamesUnattended = true })));
+
+		string bgBuyerSrc = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "NocatFarm", "Modules", "GameBuyer.cs")).Replace("\r\n", "\n");
+		string bgManagerSrc = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "NocatFarm", "Core", "BotManager.cs")).Replace("\r\n", "\n");
+		Check("games loop: it is a module, looks on the configured hours, and stops on a pause or the market hold",
+			bgManagerSrc.Contains("new GameBuyer(bot)", StringComparison.Ordinal)
+			&& bgBuyerSrc.Contains("Bot.Cfg.BuyGamesCheckHours", StringComparison.Ordinal)
+			&& bgBuyerSrc.Contains("MarketHold.Blocked(bot)", StringComparison.Ordinal)
+			&& bgBuyerSrc.Contains("Gate.Space(15, 90)", StringComparison.Ordinal));
+
+		// ── 'games do': the command path buys through the same routine ──
+		NocatFarm.Modules.GameBuyer.PlanFor = static (_, _) => Task.FromResult(new NocatFarm.Modules.GameAdvisor.Plan(
+			20, 1000, 1000, NocatFarm.Modules.BuyPlan.Limit(-1), NocatFarm.Modules.BuyPlan.Limit(-1), 0, 0, 0,
+			[new NocatFarm.Modules.GameAdvisor.GameCandidate(10, "Ten", 100, 20, 0, 0, 0, null)], [], ""));
+		var bgCommandStore = new FakeGameStore();
+		bgCommandStore.Answers.Add(new NocatFarm.Core.GamePurchase(NocatFarm.Core.GameBuyResult.Done, "", 100, 20, "t-command"));
+		NocatFarm.Modules.GameBuyer.StoreFor = _ => bgCommandStore;
+		string bgCommandSaid;
+
+		try {
+			var bgCommandBot = new NocatFarm.Core.Bot("gb-command", new NocatFarm.Config.BotConfig {
+				BuyGames = true, BuyGamesUnattended = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f
+			});
+			NocatFarm.Core.BuyGamesLedger.Of("gb-command").SetOk(true);
+			bgCommandSaid = await NocatFarm.Commands.GamesBuyAsync(bgCommandBot, CancellationToken.None);
+		} finally {
+			NocatFarm.Modules.GameBuyer.PlanFor = static (b, ct) => NocatFarm.Modules.GameAdvisor.ForAccountAsync(b, ct);
+			NocatFarm.Modules.GameBuyer.StoreFor = static b => new NocatFarm.Core.SteamGameStore(b);
+		}
+
+		Check("games do: the command path buys the planned game, records it as spent, and says so",
+			bgCommandStore.Bought is [10] && bgCommandSaid.Contains("bought Ten", StringComparison.Ordinal)
+			&& NocatFarm.Core.BuyGamesLedger.Of("gb-command").All is [{ App: 10, Pending: false, TransId: "t-command", Cents: 100 }],
+			$"{bgCommandSaid} | {string.Join(" | ", NocatFarm.Core.BuyGamesLedger.Of("gb-command").All)}");
+
+		// ── buying games is off by default ──
+		var bgDefaults = new NocatFarm.Config.BotConfig();
+		Check("games: buying any game is off by default, as is buying without asking; card drops and bundles are on",
+			!bgDefaults.BuyGames && !bgDefaults.BuyGamesUnattended && bgDefaults.BuyGamesOnlyCardDrops && bgDefaults.BuyGamesBundles
+			&& (bgDefaults.BuyGamesPriority == 0) && (bgDefaults.BuyGamesDropBasis == 0));
 	} finally {
 		NocatFarm.Log.Suppressed = bgWasSuppressed;
 		NocatFarm.Core.BuyGamesLedger.ForgetLoaded();
@@ -27591,6 +27786,14 @@ await CommandSweep.RunAsync(Check);
 		bgOkAnswer is { Result: NocatFarm.Core.GameBuyResult.Done, PaidCents: 100, TransId: "555" }
 		&& (bgOkWeb.Added == 1) && (bgOkWeb.Initialized == 1) && (bgOkWeb.Finalized == 1) && (bgOkWeb.Cleared == 1) && (bgOkWeb.Balance == 900),
 		$"{bgOkAnswer}; {bgOkWeb}");
+
+	// A bundle goes into the cart as itself (bundleid), not as one of its games' packages.
+	var bgBundleWeb = new ScriptedCheckoutWeb();
+	var bgBundleAnswer = await new NocatFarm.Core.GameCheckout(bgBundleWeb).BuyAsync(
+		new NocatFarm.Core.StoreGame(900, "Pair", 100, 20, false, false, false, false, BundleApps: [20, 21]), CancellationToken.None);
+	Check("game checkout: a bundle is added by its own id, with no package lookup, and bought",
+		bgBundleAnswer.Result == NocatFarm.Core.GameBuyResult.Done && bgBundleWeb.AddedBundle && (bgBundleWeb.AddedId == 900) && (bgBundleWeb.Packages == 0),
+		$"{bgBundleAnswer}; added {bgBundleWeb.AddedId} bundle={bgBundleWeb.AddedBundle} packages={bgBundleWeb.Packages}");
 
 	var bgExternal = new ScriptedCheckoutWeb {
 		PriceBody = "{\"success\":1,\"base\":100,\"currencycode\":20,\"externalurl\":\"https://pay.example.invalid/\"}"
@@ -42113,6 +42316,28 @@ sealed class FakeGameStore : NocatFarm.Core.IGameStore {
 	/// <summary>The apps it was asked to buy, in order.</summary>
 	public List<uint> Bought { get; } = [];
 
+	/// <summary>Apps whose store page says "Profile features limited" - they don't count toward the profile.</summary>
+	public HashSet<uint> NotCounting { get; } = [];
+
+	/// <summary>Bundle ids each app's page names, and the bundles themselves.</summary>
+	public Dictionary<uint, IReadOnlyList<uint>> Bundles { get; } = [];
+	public Dictionary<uint, NocatFarm.Core.StoreGame> BundleGames { get; } = [];
+
+	/// <summary>How many games' pages were read for bundles.</summary>
+	public int BundleLookups { get; private set; }
+
+	public Task<IReadOnlyList<uint>> BundlesForAsync(uint app, CancellationToken ct) {
+		BundleLookups++;
+
+		return Task.FromResult(Bundles.GetValueOrDefault(app) ?? (IReadOnlyList<uint>)[]);
+	}
+
+	public Task<NocatFarm.Core.StoreGame?> BundleAsync(uint bundleId, int currency, CancellationToken ct) =>
+		Task.FromResult(BundleGames.GetValueOrDefault(bundleId));
+
+	public Task<bool> CountsForProfileAsync(NocatFarm.Core.StoreGame game, CancellationToken ct) =>
+		Task.FromResult(!NotCounting.Contains(game.App));
+
 	public Task<NocatFarm.Core.GamePurchase> BuyAsync(NocatFarm.Core.StoreGame game, CancellationToken ct) {
 		Bought.Add(game.App);
 
@@ -42135,6 +42360,9 @@ sealed class ScriptedCheckoutWeb : NocatFarm.Core.IGameCheckoutWeb {
 	public string FinalizeBody { get; set; } = "{\"success\":1,\"purchaseresultdetail\":0}";
 
 	public int Added { get; private set; }
+	public uint AddedId { get; private set; }
+	public bool AddedBundle { get; private set; }
+	public int Packages { get; private set; }
 	public int Initialized { get; private set; }
 	public int Finalized { get; private set; }
 	public int Cleared { get; private set; }
@@ -42145,7 +42373,11 @@ sealed class ScriptedCheckoutWeb : NocatFarm.Core.IGameCheckoutWeb {
 	public Task<NocatFarm.Modules.CardMarket.Wallet?> WalletAsync(CancellationToken ct) =>
 		Task.FromResult<NocatFarm.Modules.CardMarket.Wallet?>(new NocatFarm.Modules.CardMarket.Wallet(Balance, Currency, false, 0));
 
-	public Task<uint?> PackageAsync(uint app, long priceCents, CancellationToken ct) => Task.FromResult<uint?>(Package);
+	public Task<uint?> PackageAsync(uint app, long priceCents, CancellationToken ct) {
+		Packages++;
+
+		return Task.FromResult<uint?>(Package);
+	}
 
 	public Task<string?> GetAsync(Uri url, Uri referer, CancellationToken ct) =>
 		Task.FromResult<string?>(url.AbsolutePath.Contains("getfinalprice", StringComparison.Ordinal) ? PriceBody
@@ -42168,8 +42400,10 @@ sealed class ScriptedCheckoutWeb : NocatFarm.Core.IGameCheckoutWeb {
 		return Task.FromResult<string?>("{}");
 	}
 
-	public Task<bool> AddToCartAsync(uint package, string country, CancellationToken ct) {
+	public Task<bool> AddToCartAsync(uint id, bool bundle, string country, CancellationToken ct) {
 		Added++;
+		AddedId = id;
+		AddedBundle = bundle;
 
 		return Task.FromResult(AddOk);
 	}

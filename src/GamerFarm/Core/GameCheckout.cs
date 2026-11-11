@@ -67,10 +67,16 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 				$"the wallet holds {BuyPlan.Money(wallet.Balance, wallet.Currency)}, less than its {BuyPlan.Money(game.PriceCents, wallet.Currency)}");
 		}
 
-		// The cart service needs a package, not an app id. The store's full appdetails answer names the packages that
-		// sell the app; the one at the price the plan saw is the one bought.
-		if (await web.PackageAsync(game.App, game.PriceCents, ct).ConfigureAwait(false) is not uint package || (package == 0)) {
-			return new(GameBuyResult.Refused, "the store doesn't sell it in a package that can be added to the cart");
+		// The cart service needs a package, not an app id - unless it's a bundle, which goes in as itself.
+		bool bundle = game.BundleApps is { Count: > 0 };
+		uint package = game.App;
+
+		if (!bundle) {
+			if (await web.PackageAsync(game.App, game.PriceCents, ct).ConfigureAwait(false) is not uint found || (found == 0)) {
+				return new(GameBuyResult.Refused, "the store doesn't sell it in a package that can be added to the cart");
+			}
+
+			package = found;
 		}
 
 		string country = CountryOf(web.Country, wallet.Saved?.Country);
@@ -80,7 +86,7 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 			return new(GameBuyResult.Failed, "the checkout page didn't answer");
 		}
 
-		if (!await web.AddToCartAsync(package, country, ct).ConfigureAwait(false)) {
+		if (!await web.AddToCartAsync(package, bundle, country, ct).ConfigureAwait(false)) {
 			return new(GameBuyResult.Failed, "it couldn't add the game to the account cart");
 		}
 
@@ -498,8 +504,8 @@ internal interface IGameCheckoutWeb {
 
 	Task<string?> PostAsync(Uri url, Dictionary<string, string> form, Uri referer, CancellationToken ct);
 
-	/// <summary>Add the package to the account cart. False when Steam didn't take it.</summary>
-	Task<bool> AddToCartAsync(uint package, string country, CancellationToken ct);
+	/// <summary>Add the package (or the bundle) to the account cart. False when Steam didn't take it.</summary>
+	Task<bool> AddToCartAsync(uint id, bool bundle, string country, CancellationToken ct);
 
 	/// <summary>Empty the account cart, best effort.</summary>
 	Task ClearCartAsync(CancellationToken ct);
@@ -529,17 +535,15 @@ internal sealed class BotCheckoutWeb(Bot bot) : IGameCheckoutWeb {
 	public Task<string?> PostAsync(Uri url, Dictionary<string, string> form, Uri referer, CancellationToken ct) =>
 		bot.Web.PostAllowingFailureAsync(url, form, referer, ct);
 
-	public async Task<bool> AddToCartAsync(uint package, string country, CancellationToken ct) {
+	public async Task<bool> AddToCartAsync(uint id, bool bundle, string country, CancellationToken ct) {
 		// The cart service takes its JSON as a form field (input_json), so it goes over the ordinary form POST with the
-		// account's access token - no separate JSON body is needed.
+		// account's access token - no separate JSON body is needed. A bundle is its own cart item: bundleid, not packageid.
+		object item = bundle
+			? new { bundleid = id, flags = new { is_gift = false, is_private = false } }
+			: new { packageid = id, flags = new { is_gift = false, is_private = false } };
 		string json = JsonSerializer.Serialize(new {
 			user_country = country,
-			items = new[] {
-				new {
-					packageid = package,
-					flags = new { is_gift = false, is_private = false }
-				}
-			},
+			items = new[] { item },
 			navdata = new {
 				domain = "store.steampowered.com",
 				controller = "default",

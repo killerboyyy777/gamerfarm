@@ -944,10 +944,36 @@ public sealed class BotConfig {
 	public bool BuyGames { get; set; }
 
 	/// <summary>
-	/// Buy games without asking first, even while nobody is at the PC. Off by default. This spends real money unattended,
-	/// within the day's and the week's limits; only for a wallet you top up on purpose (Stage 2 uses it).
+	/// Buy games without asking first, even while nobody is at the PC, on the automatic look every "Look for games to
+	/// buy every" hours. Off by default. This spends real money unattended, within the day's and the week's limits; only
+	/// for a wallet you top up on purpose.
 	/// </summary>
 	public bool BuyGamesUnattended { get; set; }
+
+	/// <summary>
+	/// What buying games is for: 0 as many games as possible (the profile's game count - cheapest first), 1 levels - only a
+	/// game whose card drops are worth more than it costs (Modules.GameAdvisor). 0 buys regardless of the drops.
+	/// </summary>
+	public int BuyGamesPriority { get; set; }
+
+	/// <summary>
+	/// In "levels" mode, what the drops are counted at: 0 the average drop, 1 the worst pull - the cheapest card every time,
+	/// the same floor the booster option uses. <see cref="BuyGamesPriority"/> must be 1 for this to mean anything.
+	/// </summary>
+	public int BuyGamesDropBasis { get; set; }
+
+	/// <summary>
+	/// In "more games" mode, only buy a game with trading-card drops (a known card set): a game with no cards can't be
+	/// sold off after its drops, and adds nothing but the profile count. On by default.
+	/// </summary>
+	public bool BuyGamesOnlyCardDrops { get; set; } = true;
+
+	/// <summary>
+	/// Also look at bundles Steam lists on the games it prices: a bundle is one cart item that can hold several games, and
+	/// its card drops, booster crafts and Steam Points all add up. On by default. The most it may pay per game doesn't
+	/// apply to a bundle - its price covers all the games in it; the day's and the week's limits still do.
+	/// </summary>
+	public bool BuyGamesBundles { get; set; } = true;
 
 	/// <summary>The most it spends on games in any 24 hours, in the wallet's own currency. Below 0 (-1): no limit - whatever the wallet holds.</summary>
 	public float BuyGamesDailyLimit { get; set; } = 5.00f;

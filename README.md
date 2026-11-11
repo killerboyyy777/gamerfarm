@@ -88,7 +88,8 @@ picks up again a few minutes after you stop.
 
 Beyond that:
 
-- Gifts, guest passes and sale stickers are picked up by default. Free-to-keep games and free DLC are one choice.
+- Gifts, guest passes and sale stickers are picked up by default. Free-to-keep games and free DLC are one choice,
+  including the permanently free DLC of games you already own.
   During Steam sales, robot accounts also nominate and vote in the Steam Awards and claim the sale's queue item
   (human-mode accounts only if you switch that on). `events` shows what it did.
 - Donations are accepted, items move between your own accounts, and fair one-for-one card swaps are taken if you
@@ -135,6 +136,13 @@ Steam sales, and free games if you turn that on.
   sells, opens or uses up your items is on by default.
 - Software (OBS, ShareX, Blender...) can be idled anywhere a game can. With Steam Family games, when the copy in use
   is busy, another member's free copy is borrowed.
+- **Buying games** (off by default) spends the Steam wallet balance - never a card, another payment method or a top-up -
+  to raise the profile's game count (cheapest first, or only games whose card drops are worth more than the price,
+  with Steam Points counted toward badge levels) or to buy games worth their card drops and booster packs. It buys only
+  paid games that count toward the profile, can be limited to games with card drops, also weighs the bundles Steam
+  lists on a game's page (and everything inside them), and keeps the same daily/weekly
+  limits as buying cards. It previews first; "Buy games without asking" lets it run on its own every few hours.
+  [How it works](docs/game-buying.md).
 - Smaller extras: pricing your next Steam level, making booster packs from gems, crafting badges and product keys.
 - **Add-ons**: reap's official extras, installed from the dashboard's Plugins page in one click, each one checked
   against a signed list first. [rep4rep](docs/rep4rep.md) is one (earn rep4rep points from your accounts' comments).

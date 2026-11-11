@@ -49,7 +49,10 @@ public static class SettingsCopy {
 		nameof(BotConfig.BuyBooster),
 		nameof(BotConfig.PointsBuySeasonalBadge), nameof(BotConfig.PointsBuyOlderBadges), nameof(BotConfig.PointsBadgeMaxLevel), nameof(BotConfig.PointsKeepAtLeast),
 		nameof(BotConfig.PointsWeeklyCap), nameof(BotConfig.BuyStopAtLevel), nameof(BotConfig.BuyKeepInWallet),
-		nameof(BotConfig.BuyGames), nameof(BotConfig.BuyGamesUnattended), nameof(BotConfig.BuyGamesKeepInWallet), nameof(BotConfig.BuyGamesMaxPrice),
+		nameof(BotConfig.BuyGames), nameof(BotConfig.BuyGamesUnattended), nameof(BotConfig.BuyGamesPriority), nameof(BotConfig.BuyGamesDropBasis),
+		nameof(BotConfig.BuyGamesOnlyCardDrops),
+		nameof(BotConfig.BuyGamesBundles),
+		nameof(BotConfig.BuyGamesKeepInWallet), nameof(BotConfig.BuyGamesMaxPrice),
 		nameof(BotConfig.BuyGamesPerLook), nameof(BotConfig.BuyGamesGapMinMinutes), nameof(BotConfig.BuyGamesGapMaxMinutes),
 		// money limits, in the wallet's own currency
 		nameof(BotConfig.BuyMaxLevelPrice), nameof(BotConfig.BuyHumanSetsPerLook), nameof(BotConfig.BuyHumanGapMinMinutes), nameof(BotConfig.BuyHumanGapMaxMinutes),

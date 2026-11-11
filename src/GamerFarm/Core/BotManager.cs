@@ -138,6 +138,7 @@ public sealed class BotManager : IAsyncDisposable {
 		bot.AddModule(new SaleEvents(bot));
 		bot.AddModule(new PointsSpender(bot));
 		bot.AddModule(new CardBuyer(bot));       // 1.8.2
+		bot.AddModule(new GameBuyer(bot));       // 1.9.x: buying games with the wallet, by itself
 		bot.AddModule(new BanWatch(bot));
 		bot.AddModule(new ScamWatch(bot));       // 1.8.0
 		bot.AddModule(new AccountHealth(bot));   // 1.8.0
