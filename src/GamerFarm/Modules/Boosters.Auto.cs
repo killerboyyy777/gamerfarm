@@ -109,6 +109,21 @@ public sealed partial class Boosters {
 
 		BoosterPick.Ranking ranking = BoosterPick.Rank(page, badges.Levels, normal, Bot.Cfg.BoosterNeverOpen, AutoMemory.Made, DateTime.UtcNow, DearCards.Marked(Bot), BuyLedger.Of(Bot.Name).PacksToOpen(DateTime.UtcNow));
 
+		// "Only make packs that would sell for a profit": keep only the games whose sealed pack pays more than the gems it takes.
+		if (Bot.Cfg.BoosterOnlyProfitable) {
+			int currency = Bot.WalletCurrency == SteamKit2.ECurrencyCode.Invalid ? 0 : (int) Bot.WalletCurrency;
+			int dumpPct = SpareRules.From(Bot.Cfg).DumpPct;
+			DateTime at = DateTime.UtcNow;
+			ranking = ranking with { Ranked = [.. ranking.Ranked.Where(c => GemsChoice.PackProfit(c.App, c.Name, c.SetSize, currency, dumpPct, at) is long p and > 0)] };
+
+			if (ranking.Ranked.Count == 0) {
+				_autoStatus = new Said("no booster pack it could sell for more than the gems it takes right now");
+				_autoNext = Later(6, 10);
+
+				return;
+			}
+		}
+
 		// 1.8.2 "Use gems for the most levels": with buying cards on, the gems maths first (Boosters.Gems.cs) - a sack or a
 		// pack to sell, or the closest badge as always. Untradable gems only ever go to the badge.
 		bool untradableOnly = false;
@@ -148,7 +163,15 @@ public sealed partial class Boosters {
 			// of the game adopts it, the booster creator page showing the game still open lets it go - and never asked
 			// for twice meanwhile.
 			AutoMemory.NoteMade(next.App, DateTime.UtcNow);
-			AutoMemory.Add(new BoosterPick.OwnPack(next.App, offer.Name, 0, after, DateTime.UtcNow, Maybe: true, SetSize: next.SetSize));
+			BoosterPick.OwnPack maybe = new(next.App, offer.Name, 0, after, DateTime.UtcNow, Maybe: true, SetSize: next.SetSize);
+
+			// A pack made for its profit is never automatic's to open: it follows "Open booster packs" like any other.
+			if (Bot.Cfg.BoosterOnlyProfitable) {
+				AutoMemory.AddMade(maybe);
+			} else {
+				AutoMemory.Add(maybe);
+			}
+
 			AutoMemory.Save(Bot.Name);
 			Log.Info(new Said("Steam didn't answer about the {0} booster pack - looking for it in the inventory before making another", offer.Name), Bot.Name);
 			_openNext = DateTime.UtcNow + Rng.Minutes(1, 3);
@@ -168,17 +191,28 @@ public sealed partial class Boosters {
 
 		AutoMemory.NoteMade(next.App, DateTime.UtcNow);
 		BoosterPick.OwnPack pack = new(next.App, offer.Name, made.ItemId, after, DateTime.UtcNow, SetSize: next.SetSize);
-		AutoMemory.Add(pack);
+		// A pack made for its profit is left sealed and judged by "Open booster packs" and "Packs it doesn't open" - opening
+		// it here would throw away exactly the profit it was made for. A badge pack is still automatic's own to open.
+		bool ownToOpen = !Bot.Cfg.BoosterOnlyProfitable;
+
+		if (ownToOpen) {
+			AutoMemory.Add(pack);
+		}
+
 		AutoMemory.AddMade(pack);   // never held back as new, should it ever be let go of before it's opened
 		AutoMemory.Save(Bot.Name);
 		Log.Reward(Boosters.MadeSaid(offer.Name, made.Gems), Bot.Name);
 		Log.Debug(new Said("{0} pack cost {1} gems - {2}", offer.Name, offer.Price, choice.Why), Bot.Name);
 
 		// Opened after a short while, like somebody looking at what they made; a robot then goes on to the next game.
-		_openNext = DateTime.UtcNow + (Bot.Cfg.LegitMode ? Rng.HumanMinutes(3, 20) : Rng.Minutes(1, 3));
+		if (ownToOpen) {
+			_openNext = DateTime.UtcNow + (Bot.Cfg.LegitMode ? Rng.HumanMinutes(3, 20) : Rng.Minutes(1, 3));
+		}
+
 		_autoNext = DateTime.UtcNow + Rng.Minutes(1, 2);
 		SpaceOut();
-		_autoStatus = new Said("made a {0} booster pack - opening it soon", offer.Name);
+		_autoStatus = ownToOpen ? new Said("made a {0} booster pack - opening it soon", offer.Name)
+			: new Said("made a {0} booster pack - it follows \"Open booster packs\"", offer.Name);
 	}
 
 	private async Task OpenOwnAsync(CancellationToken ct) {

@@ -802,6 +802,13 @@ public sealed class BotConfig {
 	public int BoosterKeepGems { get; set; }
 
 	/// <summary>
+	/// Only craft a booster pack when selling it sealed would pay more than the gems it takes are worth as a sack
+	/// (Modules.GemsChoice.PackProfit): the gems are spent, and the pack is sold after Steam's fee. Off by default - a pack
+	/// for a badge is worth making even when it would not sell for a profit.
+	/// </summary>
+	public bool BoosterOnlyProfitable { get; set; }
+
+	/// <summary>
 	/// 1.8.2 "Use gems for the most levels" (Modules/GemsChoice.cs): with buying cards on and "Make booster packs" automatic,
 	/// gems go whichever way buys the most badge levels at today's prices - a sack sold, a pack sold sealed, a pack opened and
 	/// its cards sold, or the closest badge - with a safety margin, and kept loose when it isn't sure. On by default; it does

@@ -250,27 +250,10 @@ public static class GameAdvisor {
 
 		long drop = priced > 0 ? (long) Math.Round(total * (double) drops / priced, MidpointRounding.AwayFromZero) : 0;
 		long booster = 0;
-		int dumpPct = SpareRules.From(cfg).DumpPct;
 
-		if ((cfg.BoosterMake != 0) && (SparePrices.SackPays(currency, dumpPct) is { Cents: > 0 } sack) && (nowUtc - sack.At <= CardFresh)) {
-			int gems = BoosterPick.PackGems(set.Cards.Count);
-
-			if (gems > 0) {
-				// The gems are spent to craft it, so their sack value is the cost, not the gain.
-				long cost = (long) Math.Round(Spare.GemsWorth(gems, sack.Cents), MidpointRounding.AwayFromZero);
-				string packHash = GemsChoice.PackHash(app, set.Game);
-				long net = 0;
-
-				// The pack's own quote in the wallet's money, or the game's US shortlist at the learned rate.
-				if ((MarketQuotes.Of(packHash, currency) is { Lowest: int buyer and > 0, Sales: >= MinSales } quote) && (nowUtc - quote.When <= CardFresh)) {
-					net = GemsChoice.Receive(quote, dumpPct);
-				} else if ((shortlist is { } list) && shortlistFresh && (list.Items.GetValueOrDefault(packHash) is { Kind: SpareKind.BoosterPack, Cents: > 0 } row) && (rate is double r)
-					&& (ListingPrice.For(new MarketPrice(WalletRate.ToWallet(row.Cents, r), list.When, null, 2), 3, dumpPct).Cents is int listed)) {
-					net = Seller.ReceiveFor(listed);
-				}
-
-				booster = net > cost ? net - cost : 0;
-			}
+		if (cfg.BoosterMake != 0) {
+			int dumpPct = SpareRules.From(cfg).DumpPct;
+			booster = GemsChoice.PackProfit(app, set.Game, set.Cards.Count, currency, dumpPct, nowUtc) is long profit and > 0 ? profit : 0;
 		}
 
 		return (drop, booster);

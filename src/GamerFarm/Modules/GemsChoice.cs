@@ -83,6 +83,34 @@ public static class GemsChoice {
 		(q is { Lowest: > 0 }) && (ListingPrice.For(q.Price, 3, dumpPct).Cents is int buyer) ? Seller.ReceiveFor(buyer) : 0;
 
 	/// <summary>
+	/// What crafting and selling one booster pack of this set would profit, in the wallet's money: the sealed pack's net
+	/// after Steam's fee, less what the gems it takes would fetch as a sack. Null when either price isn't known.
+	/// The gems are a real cost - the pack is crafted, not received - and the fee comes off the sale.
+	/// </summary>
+	public static long? PackProfit(uint app, string game, int setSize, int currency, int dumpPct, DateTime now) {
+		int gems = BoosterPick.PackGems(setSize);
+
+		if ((currency <= 0) || (gems <= 0)
+			|| (SparePrices.SackPays(currency, dumpPct) is not { Cents: > 0 } sack) || (now - sack.At > ChooseFresh)) {
+			return null;
+		}
+
+		long cost = (long) Math.Round(Spare.GemsWorth(gems, sack.Cents), MidpointRounding.AwayFromZero);
+		string hash = PackHash(app, game);
+		long net = 0;
+
+		if ((MarketQuotes.Of(hash, currency) is { Lowest: > 0, Sales: >= MinPackSales } quote) && (now - quote.When <= ChooseFresh)) {
+			net = Receive(quote, dumpPct);
+		} else if ((SparePrices.Cached(app) is { } list) && (now - list.When <= ChooseFresh)
+			&& (list.Items.GetValueOrDefault(hash) is { Kind: SpareKind.BoosterPack, Cents: > 0 } row) && (WalletRate.ForDeciding(currency) is double rate)
+			&& (ListingPrice.For(new MarketPrice(WalletRate.ToWallet(row.Cents, rate), list.When, null, 2), 3, dumpPct).Cents is int listed)) {
+			net = Seller.ReceiveFor(listed);
+		}
+
+		return net > 0 ? net - cost : null;
+	}
+
+	/// <summary>
 	/// Badge levels a sum buys: the cheapest next levels first (<paramref name="costs"/>, each a level's price), the last one
 	/// it reaches in part. Past the levels known, the rest at a quarter over the dearest of them - 1.8.2: never at the
 	/// dearest itself, which made money look worth more than it is (the levels past the list cost more, not the same).

@@ -141,6 +141,18 @@ public sealed partial class Boosters(Bot bot) : BotModule(bot) {
 				continue;
 			}
 
+			// "Only make packs that would sell for a profit": its sealed pack has to pay more than the gems it takes.
+			if (Bot.Cfg.BoosterOnlyProfitable) {
+				int currency = Bot.WalletCurrency == SteamKit2.ECurrencyCode.Invalid ? 0 : (int) Bot.WalletCurrency;
+
+				if (GemsChoice.PackProfit(offer.AppId, offer.Name, BoosterPick.SetSize(offer.Price), currency, SpareRules.From(Bot.Cfg).DumpPct, DateTime.UtcNow) is not long profit || profit <= 0) {
+					Log.Debug(new Said("not making a {0} booster pack - it wouldn't sell for more than the gems it takes", offer.Name), Bot.Name);
+					_next[id] = Later(6, 10);
+
+					continue;
+				}
+			}
+
 			if (gems < offer.Price + (uint) Math.Max(0, Bot.Cfg.BoosterKeepGems)) {
 				Log.Debug(new Said("not enough gems for a {0} booster pack - {1} needed, {2} here", offer.Name, offer.Price + (uint) Math.Max(0, Bot.Cfg.BoosterKeepGems), gems), Bot.Name);
 				_next[id] = Later(6, 10);

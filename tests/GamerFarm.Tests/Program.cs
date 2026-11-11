@@ -27519,6 +27519,20 @@ await CommandSweep.RunAsync(Check);
 		(long bgValueDrop, long bgBooster) = NocatFarm.Modules.GameAdvisor.Value(new NocatFarm.Config.BotConfig { BoosterMake = 2 }, 10, bgSet, 20, bgNow);
 		Check("games plan: a booster is worth its sealed sale minus the gems it costs, not the gems alone",
 			bgBooster == 7, $"drop {bgValueDrop}, booster {bgBooster}");
+		Check("booster crafting: the same profit is what the profitable-only option goes by",
+			NocatFarm.Modules.GemsChoice.PackProfit(10, "Ten", 5, 20, 50, bgNow) == 7
+			&& NocatFarm.Modules.GemsChoice.PackProfit(99, "Nothing", 5, 20, 50, bgNow) == null,
+			$"{NocatFarm.Modules.GemsChoice.PackProfit(10, "Ten", 5, 20, 50, bgNow)}");
+		Check("booster crafting: profitable packs only is off by default, and the setting says what it does",
+			!new NocatFarm.Config.BotConfig().BoosterOnlyProfitable
+			&& NocatFarm.Config.Settings.FindBot("BoosterOnlyProfitable") is { Kind: NocatFarm.Config.SettingKind.Bool }
+			&& NocatFarm.Config.Settings.FindBot("BoosterOnlyProfitable")!.Tooltip.Contains("more than the gems it takes", StringComparison.Ordinal));
+		string bgAutoSrc = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "src", "NocatFarm", "Modules", "Boosters.Auto.cs")).Replace("\r\n", "\n");
+		Check("booster crafting: a profitable pack is left to \"Open booster packs\", never opened by automatic",
+			bgAutoSrc.Contains("bool ownToOpen = !Bot.Cfg.BoosterOnlyProfitable;", StringComparison.Ordinal)
+			&& bgAutoSrc.Contains("if (ownToOpen) {\n\t\t\tAutoMemory.Add(pack);", StringComparison.Ordinal)
+			&& bgAutoSrc.Contains("AutoMemory.AddMade(maybe);", StringComparison.Ordinal)
+			&& bgAutoSrc.Contains("it follows", StringComparison.Ordinal));
 		Check("games plan: an owned game, a free one, one over the most per game, one in another money and one the store calls owned are all skipped with reasons",
 			bgPlan.Skipped.Any(static c => (c.App == 11) && (c.Skip?.Contains("owns", StringComparison.Ordinal) == true))
 			&& bgPlan.Skipped.Any(static c => (c.App == 12) && (c.Skip?.Contains("free", StringComparison.Ordinal) == true))
