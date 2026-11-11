@@ -56,6 +56,18 @@ public static class GameAdvisor {
 	public static long Keep(BotConfig cfg) => cfg.BuyGamesKeepInWallet > 0 ? BuyPlan.Cents(cfg.BuyGamesKeepInWallet) : 0;
 
 	/// <summary>
+	/// Steam Points a purchase earns, about: Steam gives 100 points for every $1.00 spent, and a price in another
+	/// currency is converted to dollars at its purchase-time rate. <paramref name="rate"/> is the wallet's money per
+	/// dollar (<see cref="WalletRate"/>); null - no rate learned yet - leaves the price as it is. A display-only
+	/// estimate: it never decides a purchase. Tax treatment is Steam's own and isn't modelled here.
+	/// </summary>
+	public static int Points(long priceCents, double? rate) {
+		double usd = (rate is double r) && (r > 0) ? priceCents / r : priceCents;
+
+		return (int) Math.Clamp(Math.Floor(usd), 0, int.MaxValue);
+	}
+
+	/// <summary>
 	/// The plan, without touching Steam itself: <paramref name="owned"/> says whether the account already has a game,
 	/// <paramref name="known"/> are the games with a known card set (the set finder's), and <paramref name="store"/> prices
 	/// them. The tests use a fake store and an empty set finder; nothing here reads the network.
@@ -182,7 +194,7 @@ public static class GameAdvisor {
 			}
 
 			(long drop, long booster) = Value(cfg, app, set, currency, nowUtc);
-			int points = (int) Math.Min(int.MaxValue, (game.PriceCents / 100) * 100);
+			int points = Points(game.PriceCents, WalletRate.ForDeciding(currency));
 			priced.Add(new GameCandidate(app, name, game.PriceCents, currency, drop, booster, points, null));
 		}
 

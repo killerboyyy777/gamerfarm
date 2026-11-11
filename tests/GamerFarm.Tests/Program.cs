@@ -27504,10 +27504,16 @@ await CommandSweep.RunAsync(Check);
 		};
 		var bgAdLedger = new NocatFarm.Core.BuyGamesLedger(BgState("buygame-ad.json"));
 		var bgOwned = new HashSet<uint> { 11 };
+		NocatFarm.Core.WalletRate.Reset();   // no learned rate: at par, a euro is a dollar for the points estimate
 		var bgPlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(bgAdCfg, 20, 1000, bgAdLedger, bgStore, bgOwned.Contains, [bgSet], bgNow, CancellationToken.None);
 		Check("games plan: a cheap game with cards fits - 1.00, about 0.06 back after drops, 100 points",
 			(bgPlan.Room == 500) && (bgPlan.Candidates.Count == 1) && bgPlan.Candidates[0] is { App: 10, PriceCents: 100, DropValueCents: 6, Points: 100 },
 			$"room {bgPlan.Room}: {string.Join(" | ", bgPlan.Candidates)}");
+		Check("games plan: Steam Points are one per US cent - 0.49 at 0.92 per dollar is 53, not 0",
+			(NocatFarm.Modules.GameAdvisor.Points(49, 0.92) == 53)
+			&& (NocatFarm.Modules.GameAdvisor.Points(100, 1.0) == 100)
+			&& (NocatFarm.Modules.GameAdvisor.Points(49, null) == 49)
+			&& (NocatFarm.Modules.GameAdvisor.Points(0, 0.9) == 0));
 		Check("games plan: an owned game, a free one, one over the most per game, one in another money and one the store calls owned are all skipped with reasons",
 			bgPlan.Skipped.Any(static c => (c.App == 11) && (c.Skip?.Contains("owns", StringComparison.Ordinal) == true))
 			&& bgPlan.Skipped.Any(static c => (c.App == 12) && (c.Skip?.Contains("free", StringComparison.Ordinal) == true))
@@ -35815,16 +35821,16 @@ static class SettingsCleanupChecks {
 				&& GamerFarm.Config.Settings.GroupOrder.ContainsKey("Spare items") && GamerFarm.Config.Settings.GroupOrder.ContainsKey("Trades"));
 
 			// ── the basic view: what a new account shows with "Show advanced" off ──
-			var newRobot = new GamerFarm.Config.BotConfig();
-			var newHuman = new GamerFarm.Config.BotConfig { LegitMode = true };
-			GamerFarm.Config.Settings.ApplyLegitMode(newHuman, false);
-			GamerFarm.Config.Settings.NewHumanAccount(newHuman);
-			List<GamerFarm.Config.Settings.ViewRow> robotRows = GamerFarm.Config.Settings.BasicView(false, newRobot);
-			List<GamerFarm.Config.Settings.ViewRow> humanRows = GamerFarm.Config.Settings.BasicView(false, newHuman);
-			List<GamerFarm.Config.Settings.ViewRow> globalRows = GamerFarm.Config.Settings.BasicView(true, new GamerFarm.Config.GlobalConfig());
-			string Names(List<GamerFarm.Config.Settings.ViewRow> r) => string.Join(", ", r.Select(x => x.Name));
-			Check("settings: a new robot account shows 29 settings with Show advanced off (it was 46; 1.8.2: \"Level-up line shows\")", robotRows.Count == 29, $"{robotRows.Count}: {Names(robotRows)}");
-			Check("settings: a new human-mode account shows about 33 (it was 55)", humanRows.Count is >= 31 and <= 35, $"{humanRows.Count}: {Names(humanRows)}");
+			var newRobot = new NocatFarm.Config.BotConfig();
+			var newHuman = new NocatFarm.Config.BotConfig { LegitMode = true };
+			NocatFarm.Config.Settings.ApplyLegitMode(newHuman, false);
+			NocatFarm.Config.Settings.NewHumanAccount(newHuman);
+			List<NocatFarm.Config.Settings.ViewRow> robotRows = NocatFarm.Config.Settings.BasicView(false, newRobot);
+			List<NocatFarm.Config.Settings.ViewRow> humanRows = NocatFarm.Config.Settings.BasicView(false, newHuman);
+			List<NocatFarm.Config.Settings.ViewRow> globalRows = NocatFarm.Config.Settings.BasicView(true, new NocatFarm.Config.GlobalConfig());
+			string Names(List<NocatFarm.Config.Settings.ViewRow> r) => string.Join(", ", r.Select(x => x.Name));
+			Check("settings: a new robot account shows 30 settings with Show advanced off (it was 46; 1.8.2: \"Level-up line shows\")", robotRows.Count == 30, $"{robotRows.Count}: {Names(robotRows)}");
+			Check("settings: a new human-mode account shows about 34 (it was 55)", humanRows.Count is >= 31 and <= 37, $"{humanRows.Count}: {Names(humanRows)}");
 			Check("settings: the global settings show 13 (it was 31; 1.9.0: Use rep4rep went to the add-on)", globalRows.Count == (OperatingSystem.IsWindows() ? 13 : 11), $"{globalRows.Count}: {Names(globalRows)}");
 			Check("settings: ...in 11 sections on a new account (the log is all advanced), 5 global",
 				(robotRows.Select(r => r.Section).Distinct().Count() == 11) && (globalRows.Select(r => r.Section).Distinct().Count() == 5),

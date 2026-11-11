@@ -1913,7 +1913,7 @@ public static partial class Settings {
 			Min: 1, Max: 168, ShowWhen: "BuyGames=true", Group: "How often", Hidden: true, Part: SecBuy),
 		new("BuyGamesPerLook", "Games per look, human mode", SecItems, SettingKind.Int,
 			"How many games one look buys on a human-mode account, the best value first - then it waits a while before the next look. For example 1 game a look, a look every 30 to 90 minutes in its day. A robot buys every game that fits in one look.",
-			Min: 1, Max: 10, Mode: "legit", ShowWhen: "BuyGames=true", Group: "How often", Unit: "games", Part: SecBuy),
+			Min: 1, Max: 10, Mode: "legit", ShowWhen: "BuyGames=true", Group: "How often", Part: SecBuy),
 		new("BuyGamesGapMinMinutes", "Shortest wait between game looks, human mode", SecItems, SettingKind.Int,
 			"The shortest wait between two looks that buy games on a human-mode account, while money is left, in minutes - only in its day. Each wait is picked at random between this and the longest. For example 30 and 90: the next look comes anywhere from half an hour to an hour and a half later.",
 			Min: 5, Max: 720, Mode: "legit", ShowWhen: "BuyGames=true", Group: "How often", Range: "Time between game looks, human mode", Hidden: true, Part: SecBuy),
