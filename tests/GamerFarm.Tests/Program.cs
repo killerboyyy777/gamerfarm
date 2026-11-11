@@ -27582,6 +27582,40 @@ await CommandSweep.RunAsync(Check);
 		&& (bgUnchangedWeb.Finalized == 1),
 		$"{bgUnchangedAnswer}; {bgUnchangedWeb}");
 
+	Check("game purchase: a sent purchase counts as spent even without a paid amount, and an untried one does not",
+		new NocatFarm.Core.GamePurchase(NocatFarm.Core.GameBuyResult.Review, Sent: true).Spent
+		&& new NocatFarm.Core.GamePurchase(NocatFarm.Core.GameBuyResult.Done, PaidCents: 100).Spent
+		&& !new NocatFarm.Core.GamePurchase(NocatFarm.Core.GameBuyResult.Failed).Spent
+		&& !new NocatFarm.Core.GamePurchase(NocatFarm.Core.GameBuyResult.Done).Spent);
+
+	string bgSaleJson = "{\"730\":{\"success\":true,\"data\":{\"name\":\"Sale\",\"type\":\"game\",\"is_free\":false,\"required_age\":0,"
+		+ "\"price_overview\":{\"initial\":2000,\"final\":500,\"currency\":\"CAD\"}}}}";
+	NocatFarm.Core.StoreGame? bgSale = NocatFarm.Core.SteamGameStore.Parse(bgSaleJson, 730);
+	Check("game store: the plan price is the sale price, not the old one, in the wallet's currency",
+		bgSale is { PriceCents: 500, Currency: 20, BundleOnly: false, Free: false }, $"{bgSale}");
+
+	string bgDlcJson = "{\"731\":{\"success\":true,\"data\":{\"name\":\"Dlc\",\"type\":\"dlc\",\"is_free\":false,"
+		+ "\"price_overview\":{\"initial\":500,\"final\":500,\"currency\":\"CAD\"}}}}";
+	string bgFreeJson = "{\"732\":{\"success\":true,\"data\":{\"name\":\"Free\",\"type\":\"game\",\"is_free\":true}}}";
+	string bgAgeJson = "{\"733\":{\"success\":true,\"data\":{\"name\":\"Adult\",\"type\":\"game\",\"is_free\":false,\"required_age\":\"18\","
+		+ "\"price_overview\":{\"initial\":500,\"final\":500,\"currency\":\"CAD\"}}}}";
+	Check("game store: a DLC is bundle-only, free is free, and an age check is seen",
+		NocatFarm.Core.SteamGameStore.Parse(bgDlcJson, 731) is { BundleOnly: true }
+		&& NocatFarm.Core.SteamGameStore.Parse(bgFreeJson, 732) is { Free: true, BundleOnly: false }
+		&& NocatFarm.Core.SteamGameStore.Parse(bgAgeJson, 733) is { AgeGated: true }
+		&& NocatFarm.Core.SteamGameStore.Parse(bgFreeJson, 999) is null);
+
+	string bgPackJson = "{\"730\":{\"success\":true,\"data\":{\"package_groups\":[{\"subs\":["
+		+ "{\"packageid\":111,\"price_in_cents_with_discount\":500},"
+		+ "{\"packageid\":222,\"price_in_cents_with_discount\":900}]}]}}}";
+	string bgOnePackJson = "{\"730\":{\"success\":true,\"data\":{\"package_groups\":[{\"subs\":["
+		+ "{\"packageid\":333,\"price_in_cents_with_discount\":500}]}]}}}";
+	Check("game store: the package at the planned price is taken; several other prices are never guessed at",
+		NocatFarm.Core.SteamGameStore.ReadPackage(bgPackJson, 730, 500) == 111
+		&& NocatFarm.Core.SteamGameStore.ReadPackage(bgPackJson, 730, 700) is null
+		&& NocatFarm.Core.SteamGameStore.ReadPackage(bgOnePackJson, 730, 700) == 333,
+		$"{NocatFarm.Core.SteamGameStore.ReadPackage(bgPackJson, 730, 500)}/{NocatFarm.Core.SteamGameStore.ReadPackage(bgPackJson, 730, 700)}");
+
 	var bgPoor = new ScriptedCheckoutWeb { Balance = 50 };
 	var (bgPoorAnswer, bgPoorWeb) = await BgBuy(bgPoor);
 	Check("game checkout: a wallet that doesn't hold enough stops before the cart or a transaction",
