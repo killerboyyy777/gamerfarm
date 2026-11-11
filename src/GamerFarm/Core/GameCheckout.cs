@@ -153,7 +153,7 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 				OutcomeAnswer finalize = ReadOutcome(finalizeBody);
 
 				if (finalize.External) {
-					return new(GameBuyResult.ExternalPayment, finalize.Text, price.TotalCents, wallet.Currency, transId, Sent: sent);
+					return new(GameBuyResult.ExternalPayment, finalize.Text, 0, wallet.Currency, transId, Sent: sent);
 				}
 			}
 
@@ -168,15 +168,15 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 			var after = await web.WalletAsync(CancellationToken.None).ConfigureAwait(false);
 
 			if (status.Ok && after is { } then && (then.Currency == before.Currency) && (before.Balance - then.Balance >= price.TotalCents)) {
-				long paid = before.Balance - then.Balance;
-
-				return new(GameBuyResult.Done, "", paid > 0 ? paid : price.TotalCents, then.Currency, transId);
+				// The finalized total is what this game cost; the rest of the drop may be another purchase.
+				return new(GameBuyResult.Done, "", price.TotalCents, then.Currency, transId);
 			}
 
-			// Sent but not confirmed: the finalized total is the most it can have charged, so it is what keeps counting.
+			// Sent but not confirmed: PaidCents stays 0 (nothing proven), and the caller keeps the planned amount counted
+			// against its limits until a later run settles it.
 			return status.Review
-				? new(GameBuyResult.Review, $"Steam wants this purchase reviewed or approved - {status.Text}", price.TotalCents, wallet.Currency, transId, Sent: sent)
-				: new(GameBuyResult.Failed, $"the wallet didn't go down by the whole price - {status.Text}", price.TotalCents, wallet.Currency, transId, Sent: sent);
+				? new(GameBuyResult.Review, $"Steam wants this purchase reviewed or approved - {status.Text}", 0, wallet.Currency, transId, Sent: sent)
+				: new(GameBuyResult.Failed, $"the wallet didn't go down by the whole price - {status.Text}", 0, wallet.Currency, transId, Sent: sent);
 		} finally {
 			// Best effort, and never the reason a purchase looks failed: an empty cart is the next look's starting point.
 			try {
