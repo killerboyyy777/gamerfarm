@@ -153,7 +153,7 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 				OutcomeAnswer finalize = ReadOutcome(finalizeBody);
 
 				if (finalize.External) {
-					return new(GameBuyResult.ExternalPayment, finalize.Text, 0, wallet.Currency, transId);
+					return new(GameBuyResult.ExternalPayment, finalize.Text, price.TotalCents, wallet.Currency, transId, Sent: sent);
 				}
 			}
 
@@ -163,17 +163,20 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 			string? statusBody = await web.GetAsync(StatusUri(transId), CheckoutPage, CancellationToken.None).ConfigureAwait(false);
 			OutcomeAnswer status = ReadOutcome(statusBody);
 
-			// Money first: the wallet must have fallen by at least the whole finalized price, whatever Steam's status says.
-			if (await web.WalletAsync(CancellationToken.None).ConfigureAwait(false) is { } after && (after.Currency == before.Currency)
-				&& (before.Balance - after.Balance >= price.TotalCents)) {
-				long paid = before.Balance - after.Balance;
+			// The balance alone is not proof: another purchase on the same wallet could fall in the settle window. Steam's own
+			// answer for this transaction must say it went through too; a review may well have charged, so it stays Review.
+			var after = await web.WalletAsync(CancellationToken.None).ConfigureAwait(false);
 
-				return new(GameBuyResult.Done, "", paid > 0 ? paid : price.TotalCents, after.Currency, transId);
+			if (status.Ok && after is { } then && (then.Currency == before.Currency) && (before.Balance - then.Balance >= price.TotalCents)) {
+				long paid = before.Balance - then.Balance;
+
+				return new(GameBuyResult.Done, "", paid > 0 ? paid : price.TotalCents, then.Currency, transId);
 			}
 
+			// Sent but not confirmed: the finalized total is the most it can have charged, so it is what keeps counting.
 			return status.Review
-				? new(GameBuyResult.Review, $"Steam wants this purchase reviewed or approved - {status.Text}", 0, wallet.Currency, transId, Sent: sent)
-				: new(GameBuyResult.Failed, $"the wallet didn't go down by the whole price - {status.Text}", 0, wallet.Currency, transId, Sent: sent);
+				? new(GameBuyResult.Review, $"Steam wants this purchase reviewed or approved - {status.Text}", price.TotalCents, wallet.Currency, transId, Sent: sent)
+				: new(GameBuyResult.Failed, $"the wallet didn't go down by the whole price - {status.Text}", price.TotalCents, wallet.Currency, transId, Sent: sent);
 		} finally {
 			// Best effort, and never the reason a purchase looks failed: an empty cart is the next look's starting point.
 			try {
@@ -353,7 +356,7 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 	}
 
 	/// <summary>What finalizetransaction or transactionstatus said, in one line, and whether it wants a review or another payment route.</summary>
-	internal readonly record struct OutcomeAnswer(bool External, bool Review, string Text);
+	internal readonly record struct OutcomeAnswer(bool External, bool Review, string Text, bool Ok = false);
 
 	internal static OutcomeAnswer ReadOutcome(string? body) {
 		if (string.IsNullOrWhiteSpace(body)) {
@@ -370,6 +373,7 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 
 			long success = Code(root, "success") ?? 0;
 			long detail = Code(root, "purchaseresultdetail") ?? 0;
+			bool ok = (success == 1) && (detail == 0);
 			string external = Text(root, "externalurl") + Text(root, "authorizationurl");
 			long receipt = 0;
 			string total = "";
@@ -399,7 +403,7 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 				said.Add($"total {total}");
 			}
 
-			return new(false, review, string.Join(", ", said));
+			return new(false, review, string.Join(", ", said), ok);
 		} catch (JsonException) {
 			return new(false, false, "Steam didn't say how the transaction ended");
 		}

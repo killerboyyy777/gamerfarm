@@ -258,6 +258,11 @@ public static partial class Commands {
 				break;
 			}
 
+			// A game that arrived after an unconfirmed purchase settles it: the money was really spent, and its room is free again.
+			foreach (BuyGamesLedger.Entry waiting in ledger.All.Where(e => e.Pending && (bot.Library.Find(e.App) is not null)).ToList()) {
+				ledger.Replace(waiting, waiting with { Pending = false });
+			}
+
 			long left = Math.Min(Math.Min(dayLimit - ledger.SpentSince(now.AddDays(-1)), weekLimit - ledger.SpentSince(now.AddDays(-7))),
 				plan.Wallet - keep - paid);
 
@@ -270,7 +275,12 @@ public static partial class Commands {
 			// Written down before it is sent: counted as spent until its outcome is known, so a crash mid-purchase can
 			// never buy past the limits.
 			BuyGamesLedger.Entry pending = new(now, candidate.PriceCents, currency, candidate.App, candidate.Name, Pending: true);
-			ledger.Add(pending);
+
+			if (!ledger.Add(pending)) {
+				lines.Add($"{name}: the list of what it spent couldn't be saved - nothing was bought");
+
+				break;
+			}
 
 			StoreGame game = new(candidate.App, candidate.Name, candidate.PriceCents, candidate.Currency, false, false, false, false);
 			GamePurchase answer;
