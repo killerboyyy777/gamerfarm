@@ -38,9 +38,12 @@ public enum GameBuyResult {
 /// transaction id once it gave one.
 /// </summary>
 /// <param name="PaidCents">What the wallet fell by, in <paramref name="Currency"/> - 0 when nothing was spent.</param>
-public sealed record GamePurchase(GameBuyResult Result, string Reason = "", long PaidCents = 0, int Currency = 0, string? TransId = null) {
-	/// <summary>Whether any money may have gone: a purchase that failed after sending still counts as spent.</summary>
-	public bool Spent => PaidCents > 0;
+public sealed record GamePurchase(GameBuyResult Result, string Reason = "", long PaidCents = 0, int Currency = 0, string? TransId = null, bool Sent = false) {
+	/// <summary>
+	/// Whether any money may have gone: once finalizing has been sent it counts as spent, even when the wallet page hasn't
+	/// caught up yet or Steam left the purchase for review.
+	/// </summary>
+	public bool Spent => (PaidCents > 0) || Sent;
 }
 
 /// <summary>What buying games needs from the Steam store. A fake in the tests - no test ever reaches Steam.</summary>
@@ -76,7 +79,7 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 
 	/// <summary>Buy the game with the wallet balance only - see <see cref="GameCheckout"/>.</summary>
 	public Task<GamePurchase> BuyAsync(StoreGame game, CancellationToken ct) =>
-		new GameCheckout(new BotCheckoutWeb(bot)).BuyAsync(game, ct);
+		new GameCheckout(new BotCheckoutWeb(bot), NocatFarm.Modules.BuyPlan.Cents(bot.Cfg.BuyGamesMaxPrice)).BuyAsync(game, ct);
 
 	/// <summary>
 	/// The package that sells an app on its own, from a full appdetails answer (the filtered ones leave package_groups
@@ -134,9 +137,8 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 	}
 
 	/// <summary>
-	/// One appdetails answer: the name, the price (today's or the regular one, whichever is higher - a sale is never
-	/// taken for the game's real price), whether it's free, age-gated, or only sold in a bundle. Null when it isn't an
-	/// answer about that app.
+	/// One appdetails answer: the name, the price the buyer pays today (the sale price when there is one, else the regular
+	/// one), whether it's free, age-gated, or only sold in a bundle. Null when it isn't an answer about that app.
 	/// </summary>
 	public static StoreGame? Parse(string? json, uint app, bool owned = false) {
 		if (string.IsNullOrWhiteSpace(json)) {
@@ -163,7 +165,9 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 				long initial = p.TryGetProperty("initial", out JsonElement i) && i.TryGetInt64(out long iv) ? iv : 0;
 				long final = p.TryGetProperty("final", out JsonElement v) && v.TryGetInt64(out long fv) ? fv : 0;
 
-				price = Math.Max(0, Math.Max(initial, final));
+				// What the buyer pays today: a sale is the game's real price, and the package the cart adds is the one at
+				// this price (not the regular one).
+				price = Math.Max(0, final > 0 ? final : initial);
 				currency = p.TryGetProperty("currency", out JsonElement c) && (c.ValueKind == JsonValueKind.String) ? Code(c.GetString()) : 0;
 			}
 

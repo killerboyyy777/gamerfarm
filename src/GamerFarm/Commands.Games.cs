@@ -223,7 +223,8 @@ public static partial class Commands {
 		long dayLimit = BuyPlan.Limit(bot.Cfg.BuyGamesDailyLimit);
 		long weekLimit = BuyPlan.Limit(bot.Cfg.BuyGamesWeeklyLimit);
 		long keep = GameAdvisor.Keep(bot.Cfg);
-		int most = Math.Clamp(bot.Cfg.BuyGamesPerLook, 1, 10);
+		// A robot buys every game that fits in the look; the setting paces a human-mode account only.
+		int most = bot.Cfg.LegitMode ? Math.Clamp(bot.Cfg.BuyGamesPerLook, 1, 10) : int.MaxValue;
 		DateTime now = DateTimeOffset.FromUnixTimeSeconds(Confirmations.SteamTimeNow).UtcDateTime;   // the limits go by Steam's clock
 		IGameStore store = new SteamGameStore(bot);
 		List<string> lines = [];
@@ -299,7 +300,9 @@ public static partial class Commands {
 			} else {
 				// Money first: anything that may have spent stays in the list as pending.
 				if (answer.Spent) {
-					ledger.Replace(pending, pending with { Cents = answer.PaidCents, Pending = true, TransId = answer.TransId });
+					// Sent but not confirmed: keep the planned amount when Steam didn't say what it charged, so the
+					// day's and week's limits still count it.
+					ledger.Replace(pending, pending with { Cents = answer.PaidCents > 0 ? answer.PaidCents : pending.Cents, Pending = true, TransId = answer.TransId });
 				} else {
 					ledger.Replace(pending, null);
 				}

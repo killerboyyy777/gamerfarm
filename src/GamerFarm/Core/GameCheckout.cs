@@ -14,7 +14,7 @@ namespace NocatFarm.Core;
 /// afterwards; only a balance that went <em>down</em> is a purchase. Steam sometimes writes ids and money as strings,
 /// so every number here is read either way. Nothing personal (the billing form) is ever logged.
 /// </remarks>
-internal sealed class GameCheckout(IGameCheckoutWeb web) {
+internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 	internal static readonly Uri CheckoutRoot = new("https://checkout.steampowered.com");
 	internal static readonly Uri StoreCart = new(WebSession.Store, "/cart/");
 
@@ -118,6 +118,13 @@ internal sealed class GameCheckout(IGameCheckoutWeb web) {
 					0, wallet.Currency, transId);
 			}
 
+			// The cap is on what is really charged (tax included), not just the store's price.
+			if ((maxCents > 0) && (price.TotalCents > maxCents)) {
+				return new(GameBuyResult.Refused,
+					$"the final price is {BuyPlan.Money(price.TotalCents, wallet.Currency)}, over the {BuyPlan.Money(maxCents, wallet.Currency)} most it may pay for one game - nothing was finalized",
+					0, wallet.Currency, transId);
+			}
+
 			// The wallet is read afresh just before finalizing: this is what success is measured from.
 			if (await web.WalletAsync(ct).ConfigureAwait(false) is not { } before) {
 				return new(GameBuyResult.Failed, "Steam didn't say what's in its wallet before finalizing - nothing was finalized", 0, wallet.Currency, transId);
@@ -133,6 +140,8 @@ internal sealed class GameCheckout(IGameCheckoutWeb web) {
 					0, before.Currency, transId);
 			}
 
+			// From here the purchase may go through: whatever the answer, it counts as spent until the wallet says otherwise.
+			bool sent = true;
 			string? finalizeBody = await web.PostAsync(FinalizeTransaction,
 				new Dictionary<string, string>(StringComparer.Ordinal) {
 					["transid"] = transId,
@@ -154,16 +163,17 @@ internal sealed class GameCheckout(IGameCheckoutWeb web) {
 			string? statusBody = await web.GetAsync(StatusUri(transId), CheckoutPage, CancellationToken.None).ConfigureAwait(false);
 			OutcomeAnswer status = ReadOutcome(statusBody);
 
-			// Money first: only a wallet that actually fell is a purchase, whatever Steam's status says.
-			if (await web.WalletAsync(CancellationToken.None).ConfigureAwait(false) is { } after && (after.Currency == before.Currency) && (after.Balance < before.Balance)) {
+			// Money first: the wallet must have fallen by at least the whole finalized price, whatever Steam's status says.
+			if (await web.WalletAsync(CancellationToken.None).ConfigureAwait(false) is { } after && (after.Currency == before.Currency)
+				&& (before.Balance - after.Balance >= price.TotalCents)) {
 				long paid = before.Balance - after.Balance;
 
 				return new(GameBuyResult.Done, "", paid > 0 ? paid : price.TotalCents, after.Currency, transId);
 			}
 
 			return status.Review
-				? new(GameBuyResult.Review, $"Steam wants this purchase reviewed or approved - {status.Text}", 0, wallet.Currency, transId)
-				: new(GameBuyResult.Failed, $"the wallet didn't go down - {status.Text}", 0, wallet.Currency, transId);
+				? new(GameBuyResult.Review, $"Steam wants this purchase reviewed or approved - {status.Text}", 0, wallet.Currency, transId, Sent: sent)
+				: new(GameBuyResult.Failed, $"the wallet didn't go down by the whole price - {status.Text}", 0, wallet.Currency, transId, Sent: sent);
 		} finally {
 			// Best effort, and never the reason a purchase looks failed: an empty cart is the next look's starting point.
 			try {
