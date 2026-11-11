@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Reflection;
 using GamerFarm;
 
@@ -27431,6 +27431,128 @@ await CommandSweep.RunAsync(Check);
 	}
 }
 
+// ── 1.9.0: buying games - the settings, the spending list, and the read-only advisor; fakes only ──
+{
+	string bgRealRoot = NocatFarm.Config.ConfigStore.Root;
+	string bgRoot = Path.Combine(Path.GetTempPath(), "nf-games-" + Guid.NewGuid().ToString("N"));
+	Directory.CreateDirectory(Path.Combine(bgRoot, "config"));
+	NocatFarm.Config.ConfigStore.UseRoot(bgRoot);
+	bool bgWasSuppressed = NocatFarm.Log.Suppressed;
+	NocatFarm.Log.Suppressed = true;
+	string BgState(string file) => Path.Combine(bgRoot, "config", "state", file);
+
+	try {
+		// ── off by default, with its own limits ──
+		var bgCfg = new NocatFarm.Config.BotConfig();
+		Check("games: off by default and never unattended - 5.00 a day, 20.00 a week, 1.00 a game, a look every 24 hours",
+			!bgCfg.BuyGames && !bgCfg.BuyGamesUnattended && (bgCfg.BuyGamesDailyLimit == 5f) && (bgCfg.BuyGamesWeeklyLimit == 20f)
+			&& (bgCfg.BuyGamesMaxPrice == 1f) && (bgCfg.BuyGamesCheckHours == 24) && (bgCfg.BuyGamesPerLook == 1)
+			&& (bgCfg.BuyGamesGapMinMinutes == 30) && (bgCfg.BuyGamesGapMaxMinutes == 90) && (bgCfg.BuyGamesApps.Count == 0),
+			$"{bgCfg.BuyGamesDailyLimit} {bgCfg.BuyGamesWeeklyLimit} {bgCfg.BuyGamesMaxPrice} {bgCfg.BuyGamesCheckHours}");
+		var bgDef = NocatFarm.Config.Settings.FindBot("BuyGames");
+		var bgUnattendedDef = NocatFarm.Config.Settings.FindBot("BuyGamesUnattended");
+		var bgDayDef = NocatFarm.Config.Settings.FindBot("BuyGamesDailyLimit");
+		Check("games: its switch is in the Buying cards part, on the basic page; the unattended one is advanced and shows under it; money is a no-limit setting",
+			(bgDef is { Part: "Buying cards", Group: "What it does", Advanced: false, Kind: NocatFarm.Config.SettingKind.Bool })
+			&& bgDef.Tooltip.Contains("wallet", StringComparison.Ordinal)
+			&& (bgUnattendedDef is { Advanced: true, ShowWhen: "BuyGames=true" }) && bgUnattendedDef.Tooltip.Contains("real money", StringComparison.Ordinal)
+			&& (bgDayDef is { NoLimit: true, Unit: "wallet currency", ShowWhen: "BuyGames=true" }),
+			$"{bgDef} {bgUnattendedDef}");
+		Check("games: copying settings never brings buying games, or buying unattended, onto the account copied to",
+			NocatFarm.Core.SettingsCopy.KeptAsTheyAre.Contains("BuyGames") && NocatFarm.Core.SettingsCopy.KeptAsTheyAre.Contains("BuyGamesUnattended")
+			&& !NocatFarm.Core.SettingsCopy.CopiedAcross.Contains("BuyGames"));
+
+		// ── the spending list ──
+		var bgLedger = new NocatFarm.Core.BuyGamesLedger(BgState("buygame-ledger.json"));
+		bgLedger.SetOk(true);
+		Check("games ledger: its go-ahead is kept in its own file, and read back", bgLedger.Ok);
+		DateTime bgNow = DateTime.UtcNow;
+		bgLedger.Add(new NocatFarm.Core.BuyGamesLedger.Entry(bgNow.AddHours(-1), 100, 20, 10, "Ten", Pending: true));
+		bgLedger.Add(new NocatFarm.Core.BuyGamesLedger.Entry(bgNow.AddDays(-61), 300, 20, 11, "Old"));
+		Check("games ledger: pending counts as spent, and entries older than 60 days are pruned",
+			(bgLedger.SpentSince(bgNow.AddDays(-1)) == 100) && (bgLedger.All.Count == 1) && (bgLedger.All[0].Name == "Ten"), string.Join(" | ", bgLedger.All));
+		var bgEntry = bgLedger.All[0];
+		bgLedger.Replace(bgEntry, bgEntry with { Pending = false, TransId = "t1", Cents = 90 });
+		Check("games ledger: a purchase is changed in place - its outcome known, its price corrected",
+			bgLedger.All is [{ Pending: false, TransId: "t1", Cents: 90 }], string.Join(" | ", bgLedger.All));
+		Directory.CreateDirectory(Path.Combine(bgRoot, "config", "state"));
+		File.WriteAllText(BgState("buygame-bad.json"), "{not json");
+		var bgBad = new NocatFarm.Core.BuyGamesLedger(BgState("buygame-bad.json"));
+		Check("games ledger: a list that can't be read counts as everything spent, and stops buying",
+			bgBad.Unreadable && (bgBad.SpentSince(DateTime.UtcNow.AddDays(-1)) > 1_000_000) && (bgBad.UnreadableText.Length > 0));
+		Check("games ledger: a removed account's file goes with it", NocatFarm.Config.ConfigStore.AccountFiles.Contains(("state", "buygame-", ".json")));
+
+		// ── the advisor: a cheap card game fits; owned, free, dear and over-the-limit games are skipped ──
+		var bgCards = Enumerable.Range(1, 5).Select(static i => $"10-Card {i}").ToList();
+		var bgSet = new NocatFarm.Core.SetFinder.KnownSet(10, "Ten", bgCards, bgCards.ToDictionary(static c => c, static _ => 5), 5, bgNow);
+
+		foreach (string card in bgCards) {
+			NocatFarm.Core.MarketQuotes.Keep(new NocatFarm.Core.MarketQuote(card, 20, 5, 5, 8, bgNow.Ticks));
+		}
+
+		var bgStore = new FakeGameStore();
+		bgStore.Games[10] = new NocatFarm.Core.StoreGame(10, "Ten", 100, 20, false, false, false, false);
+		bgStore.Games[11] = new NocatFarm.Core.StoreGame(11, "Owned", 50, 20, false, false, false, false);
+		bgStore.Games[12] = new NocatFarm.Core.StoreGame(12, "Free", 0, 20, true, false, false, false);
+		bgStore.Games[13] = new NocatFarm.Core.StoreGame(13, "Dear", 200, 20, false, false, false, false);
+		bgStore.Games[14] = new NocatFarm.Core.StoreGame(14, "Sixty", 60, 20, false, false, false, false);
+		bgStore.Games[15] = new NocatFarm.Core.StoreGame(15, "Other Money", 100, 1, false, false, false, false);
+		bgStore.Games[16] = new NocatFarm.Core.StoreGame(16, "Store Says Owned", 50, 20, false, false, false, true);
+
+		var bgAdCfg = new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesApps = [10, 11, 12, 13, 15, 16], BuyGamesMaxPrice = 1.00f, BuyGamesDailyLimit = 5.00f, BuyGamesWeeklyLimit = 20.00f
+		};
+		var bgAdLedger = new NocatFarm.Core.BuyGamesLedger(BgState("buygame-ad.json"));
+		var bgOwned = new HashSet<uint> { 11 };
+		var bgPlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(bgAdCfg, 20, 1000, bgAdLedger, bgStore, bgOwned.Contains, [bgSet], bgNow, CancellationToken.None);
+		Check("games plan: a cheap game with cards fits - 1.00, about 0.06 back after drops, 100 points",
+			(bgPlan.Room == 500) && (bgPlan.Candidates.Count == 1) && bgPlan.Candidates[0] is { App: 10, PriceCents: 100, DropValueCents: 6, Points: 100 },
+			$"room {bgPlan.Room}: {string.Join(" | ", bgPlan.Candidates)}");
+		Check("games plan: an owned game, a free one, one over the most per game, one in another money and one the store calls owned are all skipped with reasons",
+			bgPlan.Skipped.Any(static c => (c.App == 11) && (c.Skip?.Contains("owns", StringComparison.Ordinal) == true))
+			&& bgPlan.Skipped.Any(static c => (c.App == 12) && (c.Skip?.Contains("free", StringComparison.Ordinal) == true))
+			&& bgPlan.Skipped.Any(static c => (c.App == 13) && (c.Skip?.Contains("most per game", StringComparison.Ordinal) == true))
+			&& bgPlan.Skipped.Any(static c => (c.App == 15) && (c.Skip?.Contains("priced it in", StringComparison.Ordinal) == true))
+			&& bgPlan.Skipped.Any(static c => (c.App == 16) && (c.Skip?.Contains("owns", StringComparison.Ordinal) == true)),
+			string.Join(" | ", bgPlan.Skipped.Select(static c => $"{c.App}:{c.Skip}")));
+
+		var bgKnownPlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig { BuyGames = true, BuyGamesMaxPrice = 1.00f },
+			20, 1000, new NocatFarm.Core.BuyGamesLedger(BgState("buygame-known.json")), bgStore, static _ => false, [bgSet], bgNow, CancellationToken.None);
+		Check("games plan: a game with a known card set is found without being named", bgKnownPlan.Candidates.Any(static c => c.App == 10), string.Join(" | ", bgKnownPlan.Candidates));
+
+		// ── the day's limit and the wallet's keep: the room is the smallest of them ──
+		var bgDayLedger = new NocatFarm.Core.BuyGamesLedger(BgState("buygame-day.json"));
+		bgDayLedger.Add(new NocatFarm.Core.BuyGamesLedger.Entry(bgNow.AddHours(-1), 100, 20, 99, "Already"));
+		var bgDayCfg = new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesApps = [10, 14], BuyGamesMaxPrice = 1.00f, BuyGamesDailyLimit = 1.50f, BuyGamesWeeklyLimit = 20.00f
+		};
+		var bgDayPlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(bgDayCfg, 20, 1000, bgDayLedger, bgStore, static _ => false, [bgSet], bgNow, CancellationToken.None);
+		Check("games plan: 1.00 of a 1.50 day already spent leaves 0.50 - the 1.00 game and the 0.60 one both wait, with why",
+			(bgDayPlan.Room == 50) && (bgDayPlan.DaySpent == 100) && (bgDayPlan.Candidates.Count == 0)
+			&& bgDayPlan.Skipped.Any(static c => (c.App == 14) && (c.Skip?.Contains("may be spent now", StringComparison.Ordinal) == true)),
+			$"room {bgDayPlan.Room}: {string.Join(" | ", bgDayPlan.Skipped.Select(static c => $"{c.App}:{c.Skip}"))}");
+
+		var bgKeepCfg = new NocatFarm.Config.BotConfig { BuyGames = true, BuyGamesDailyLimit = 5.00f, BuyGamesWeeklyLimit = 20.00f, BuyGamesKeepInWallet = 2.50f };
+		var bgKeepPlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(bgKeepCfg, 20, 300, new NocatFarm.Core.BuyGamesLedger(BgState("buygame-keep.json")),
+			bgStore, static _ => false, [], bgNow, CancellationToken.None);
+		Check("games plan: keeping 2.50 of a 3.00 wallet leaves 0.50, smaller than either limit", (bgKeepPlan.Keep == 250) && (bgKeepPlan.Room == 50), $"keep {bgKeepPlan.Keep}, room {bgKeepPlan.Room}");
+
+		var bgNoWallet = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig(), 0, 0,
+			new NocatFarm.Core.BuyGamesLedger(BgState("buygame-nowallet.json")), bgStore, static _ => false, [], bgNow, CancellationToken.None);
+		Check("games plan: no wallet currency is a problem, not a plan that spends nothing", bgNoWallet.Problem.Length > 0 && bgNoWallet.Candidates.Count == 0, bgNoWallet.Problem);
+
+		var bgUnreadablePlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(bgAdCfg, 20, 1000, bgBad, bgStore, static _ => false, [bgSet], bgNow, CancellationToken.None);
+		Check("games plan: the unreadable spending list stops it and says which file", bgUnreadablePlan.Problem.Length > 0 && bgUnreadablePlan.Candidates.Count == 0, bgUnreadablePlan.Problem);
+	} finally {
+		NocatFarm.Log.Suppressed = bgWasSuppressed;
+		NocatFarm.Core.BuyGamesLedger.ForgetLoaded();
+		NocatFarm.Core.SparePrices.Reset();
+		NocatFarm.Config.ConfigStore.UseRoot(bgRealRoot);
+
+		TestTemp.Gone(bgRoot);
+	}
+}
+
 // ── 1.8.2: the wake time while asleep, and the end of a sitting ──
 {
 	string wkRepo = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..");
@@ -41847,5 +41969,16 @@ static class SignInLinkChecks {
 				try { Directory.Delete(servedWww); } catch (IOException) { /* the next build's */ }
 			}
 		}
+/// <summary>A Steam store that answers from a dictionary - the game-buying checks never reach Steam.</summary>
+sealed class FakeGameStore : NocatFarm.Core.IGameStore {
+	public Dictionary<uint, NocatFarm.Core.StoreGame> Games { get; } = [];
+
+	/// <summary>How many games it was asked about - a plan never prices more than a handful.</summary>
+	public int Lookups { get; private set; }
+
+	public Task<NocatFarm.Core.StoreGame?> GameAsync(uint app, int currency, CancellationToken ct) {
+		Lookups++;
+
+		return Task.FromResult(Games.GetValueOrDefault(app));
 	}
 }

@@ -172,6 +172,17 @@ public static class Switches {
 			buy.SetOk(false);
 		}
 
+		// Buying games: the same rule, with its go-ahead in its own spending list (Stage 1: not one of the switch rows
+		// above yet - the command is the only way on).
+		BuyGamesLedger games = BuyGamesLedger.Of(account);
+
+		if (cfg.BuyGames && !games.Ok) {
+			cfg.BuyGames = false;
+			changed = true;
+		} else if (!cfg.BuyGames && games.Ok) {
+			games.SetOk(false);
+		}
+
 		return changed;
 	}
 

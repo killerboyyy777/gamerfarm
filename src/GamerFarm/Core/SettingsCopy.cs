@@ -49,9 +49,12 @@ public static class SettingsCopy {
 		nameof(BotConfig.BuyBooster),
 		nameof(BotConfig.PointsBuySeasonalBadge), nameof(BotConfig.PointsBuyOlderBadges), nameof(BotConfig.PointsBadgeMaxLevel), nameof(BotConfig.PointsKeepAtLeast),
 		nameof(BotConfig.PointsWeeklyCap), nameof(BotConfig.BuyStopAtLevel), nameof(BotConfig.BuyKeepInWallet),
+		nameof(BotConfig.BuyGames), nameof(BotConfig.BuyGamesUnattended), nameof(BotConfig.BuyGamesKeepInWallet), nameof(BotConfig.BuyGamesMaxPrice),
+		nameof(BotConfig.BuyGamesPerLook), nameof(BotConfig.BuyGamesGapMinMinutes), nameof(BotConfig.BuyGamesGapMaxMinutes),
 		// money limits, in the wallet's own currency
 		nameof(BotConfig.BuyMaxLevelPrice), nameof(BotConfig.BuyHumanSetsPerLook), nameof(BotConfig.BuyHumanGapMinMinutes), nameof(BotConfig.BuyHumanGapMaxMinutes),
-		nameof(BotConfig.BuyDailyLimit), nameof(BotConfig.BuyWeeklyLimit), nameof(BotConfig.CardSwapMaxLoss), nameof(BotConfig.SpareMaxPrice), nameof(BotConfig.SpareDailyValue),
+		nameof(BotConfig.BuyDailyLimit), nameof(BotConfig.BuyWeeklyLimit), nameof(BotConfig.BuyGamesDailyLimit), nameof(BotConfig.BuyGamesWeeklyLimit),
+		nameof(BotConfig.CardSwapMaxLoss), nameof(BotConfig.SpareMaxPrice), nameof(BotConfig.SpareDailyValue),
 		nameof(BotConfig.SpareMinSale),
 		// trades
 		nameof(BotConfig.AcceptFairCardSwaps), nameof(BotConfig.CardSwapsPerDay), nameof(BotConfig.TradeMasters),
@@ -127,7 +130,7 @@ public static class SettingsCopy {
 		// Points
 		nameof(BotConfig.PointsCheckEveryHours),
 		// Buy
-		nameof(BotConfig.BuyCheckHours),
+		nameof(BotConfig.BuyCheckHours), nameof(BotConfig.BuyGamesCheckHours), nameof(BotConfig.BuyGamesApps),
 		// Inventory
 		nameof(BotConfig.ShowInventoryValue), nameof(BotConfig.InventoryIgnoreGames),
 		// ScamWatch

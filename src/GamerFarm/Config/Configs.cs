@@ -927,6 +927,49 @@ public sealed class BotConfig {
 	/// <summary>How often it looks, in hours.</summary>
 	public int BuyCheckHours { get; set; } = 12;
 
+	// ── Buying games (Modules/GameAdvisor.cs, Commands.Games.cs) ──
+
+	/// <summary>
+	/// Buy Steam games with the account's wallet balance - only ever the balance, never a card or another payment method,
+	/// and never a top-up. Off by default on every account: it spends real money. Turned on only after its preview
+	/// ('games &lt;account&gt; on yes'), its go-ahead kept beside its spending (Core.BuyGamesLedger), never here.
+	/// </summary>
+	public bool BuyGames { get; set; }
+
+	/// <summary>
+	/// Buy games without asking first, even while nobody is at the PC. Off by default. This spends real money unattended,
+	/// within the day's and the week's limits; only for a wallet you top up on purpose (Stage 2 uses it).
+	/// </summary>
+	public bool BuyGamesUnattended { get; set; }
+
+	/// <summary>The most it spends on games in any 24 hours, in the wallet's own currency. Below 0 (-1): no limit - whatever the wallet holds.</summary>
+	public float BuyGamesDailyLimit { get; set; } = 5.00f;
+
+	/// <summary>The most it spends on games in any 7 days, in the wallet's own currency. Below 0 (-1): no limit - whatever the wallet holds.</summary>
+	public float BuyGamesWeeklyLimit { get; set; } = 20.00f;
+
+	/// <summary>Buying games never takes the wallet below this (wallet currency; 0: off).</summary>
+	public float BuyGamesKeepInWallet { get; set; }
+
+	/// <summary>The most it pays for one game, in the wallet's own currency. 0: no per-game cap - the day's and the week's limits still apply.</summary>
+	public float BuyGamesMaxPrice { get; set; } = 1.00f;
+
+	/// <summary>How often it looks for games to buy, in hours.</summary>
+	public int BuyGamesCheckHours { get; set; } = 24;
+
+	/// <summary>Games one look buys on a human-mode account (a robot buys every one that fits).</summary>
+	public int BuyGamesPerLook { get; set; } = 1;
+
+	/// <summary>Minutes between two looks that buy games on a human-mode account, picked at random in between, only in its day.</summary>
+	public int BuyGamesGapMinMinutes { get; set; } = 30;
+	public int BuyGamesGapMaxMinutes { get; set; } = 90;
+
+	/// <summary>
+	/// Extra app ids to consider buying. The advisor also considers every game with a known trading-card set, so a game
+	/// whose cards pay something back is found without listing it here.
+	/// </summary>
+	public List<uint> BuyGamesApps { get; set; } = [];
+
 	/// <summary>
 	/// Retired "Sell duplicate cards" switch - read from a file from before 1.8.0 only, for the carry-over to
 	/// <see cref="SpareItems"/> (ConfigStore.MigrateSpare). 1.8.6: never written any more - the mirror kept for a rollback
@@ -2012,7 +2055,7 @@ public static partial class ConfigStore {
 			return false;
 		}
 
-		bool spare = cfg.SpareItems, points = cfg.SpendPoints, buy = cfg.BuyCards;
+		bool spare = cfg.SpareItems, points = cfg.SpendPoints, buy = cfg.BuyCards, games = cfg.BuyGames;
 
 		if (!Core.Switches.Settle(cfg, name)) {
 			return false;
@@ -2028,6 +2071,10 @@ public static partial class ConfigStore {
 
 		if (buy && !cfg.BuyCards) {
 			Log.Attention(new Said("{0}: buying cards is off until you turn it on in Settings - it shows what it would buy first", name), name);
+		}
+
+		if (games && !cfg.BuyGames) {
+			Log.Attention(new Said("{0}: buying games is off until its preview is accepted - 'games {0} preview', then 'games {0} on yes'", name), name);
 		}
 
 		return true;
@@ -2375,6 +2422,7 @@ public static partial class ConfigStore {
 		("state", "points-", ".json"),   // Steam Points spent (Modules/PointsSpender.cs)
 		("state", "spare-", ".json"),
 		("state", "buy-", ".json"),   // money spent buying cards, and its go-ahead (Modules/CardBuyer.cs)
+		("state", "buygame-", ".json"),   // money spent buying games, and its go-ahead (Core/BuyGamesLedger.cs)
 		("state", "listed-", ".json"),   // listings gamer.farm put up itself (Core/OurListings.cs)
 		("state", "levels-", ".json"),   // 1.8.7: its levelling figures for the weekly report (Core/LevelReport.cs)
 		("state", "boosters-", ".json"),   // booster packs automatic made and still has to open (Modules/BoosterPick.cs)
