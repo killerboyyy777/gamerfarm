@@ -12,18 +12,53 @@ namespace NocatFarm.Core;
 /// <param name="Owned">The account already has it (its library, or the store's own answer).</param>
 public sealed record StoreGame(uint App, string Name, long PriceCents, int Currency, bool Free, bool AgeGated, bool BundleOnly, bool Owned);
 
+/// <summary>How one game purchase went. Anything but <see cref="Done"/> spent nothing, or says in its reason that it may have.</summary>
+public enum GameBuyResult {
+	/// <summary>Bought: the wallet balance fell by what Steam took.</summary>
+	Done,
+
+	/// <summary>Steam said no, readably, before anything was finalized.</summary>
+	Refused,
+
+	/// <summary>Steam wants the payment made somewhere else (a card, PayPal, a bank page): never followed, nothing spent.</summary>
+	ExternalPayment,
+
+	/// <summary>The wallet didn't hold enough for the final price - or Steam said so - so nothing was finalized.</summary>
+	InsufficientFunds,
+
+	/// <summary>Steam wants the purchase reviewed, approved or challenged (3D Secure, a bank check): never bypassed.</summary>
+	Review,
+
+	/// <summary>It didn't work, and what it did isn't certain: <see cref="GamePurchase.Spent"/> says whether money went.</summary>
+	Failed
+}
+
 /// <summary>
-/// What buying games needs from the Steam store. A fake in the tests - no test ever reaches Steam. Stage 2 adds
-/// <c>BuyAsync(StoreGame, ...)</c> here; it is deliberately not here yet.
+/// One game purchase's answer: how it went, why when not simply bought, what the wallet actually paid, and Steam's
+/// transaction id once it gave one.
 /// </summary>
+/// <param name="PaidCents">What the wallet fell by, in <paramref name="Currency"/> - 0 when nothing was spent.</param>
+public sealed record GamePurchase(GameBuyResult Result, string Reason = "", long PaidCents = 0, int Currency = 0, string? TransId = null) {
+	/// <summary>Whether any money may have gone: a purchase that failed after sending still counts as spent.</summary>
+	public bool Spent => PaidCents > 0;
+}
+
+/// <summary>What buying games needs from the Steam store. A fake in the tests - no test ever reaches Steam.</summary>
 public interface IGameStore {
 	/// <summary>The game's price and state now, in the wallet's currency (best effort). Null when the store didn't answer.</summary>
 	Task<StoreGame?> GameAsync(uint app, int currency, CancellationToken ct);
+
+	/// <summary>
+	/// Buy the game, from the Steam wallet balance only. Spends money. Never adds funds, never follows an external
+	/// payment page, never falls back to another payment method: anything but the wallet is <see cref="GameBuyResult.ExternalPayment"/>
+	/// or <see cref="GameBuyResult.Review"/> and spends nothing.
+	/// </summary>
+	Task<GamePurchase> BuyAsync(StoreGame game, CancellationToken ct);
 }
 
 /// <summary>
 /// The Steam store, read for real: appdetails?filters=basic,price_overview in the account's country, so prices come back
-/// in its own wallet currency. Read only - nothing here buys anything.
+/// in its own wallet currency. <see cref="BuyAsync"/> is the wallet-only checkout (Core/GameCheckout.cs).
 /// </summary>
 public sealed class SteamGameStore(Bot bot) : IGameStore {
 	/// <summary>Steam's store doesn't like being hurried: at least this long between two appdetails reads.</summary>
@@ -37,6 +72,65 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 		(int status, string? body) = await GameCatalog.StoreGetAsync(url, Gap, ct).ConfigureAwait(false);
 
 		return (status != 200) || string.IsNullOrWhiteSpace(body) ? null : Parse(body, app, bot.Library.Find(app) is not null);
+	}
+
+	/// <summary>Buy the game with the wallet balance only - see <see cref="GameCheckout"/>.</summary>
+	public Task<GamePurchase> BuyAsync(StoreGame game, CancellationToken ct) =>
+		new GameCheckout(new BotCheckoutWeb(bot)).BuyAsync(game, ct);
+
+	/// <summary>
+	/// The package that sells an app on its own, from a full appdetails answer (the filtered ones leave package_groups
+	/// out). The one whose price is the price the plan saw is preferred; one package on its own is that game's, several at
+	/// another price are never guessed at. Null when the store names no package that can be added to a cart.
+	/// </summary>
+	public static uint? ReadPackage(string? json, uint app, long priceCents) {
+		if (string.IsNullOrWhiteSpace(json)) {
+			return null;
+		}
+
+		try {
+			using JsonDocument doc = JsonDocument.Parse(json);
+
+			if (!doc.RootElement.TryGetProperty(app.ToString(CultureInfo.InvariantCulture), out JsonElement node) || (node.ValueKind != JsonValueKind.Object)
+				|| !node.TryGetProperty("success", out JsonElement ok) || (ok.ValueKind != JsonValueKind.True)
+				|| !node.TryGetProperty("data", out JsonElement data) || (data.ValueKind != JsonValueKind.Object)
+				|| !data.TryGetProperty("package_groups", out JsonElement groups) || (groups.ValueKind != JsonValueKind.Array)) {
+				return null;
+			}
+
+			List<(uint Package, long Price)> subs = [];
+
+			foreach (JsonElement group in groups.EnumerateArray()) {
+				if ((group.ValueKind != JsonValueKind.Object) || !group.TryGetProperty("subs", out JsonElement list) || (list.ValueKind != JsonValueKind.Array)) {
+					continue;
+				}
+
+				foreach (JsonElement sub in list.EnumerateArray()) {
+					if ((sub.ValueKind != JsonValueKind.Object) || !sub.TryGetProperty("packageid", out JsonElement id) || !id.TryGetUInt32(out uint package) || (package == 0)) {
+						continue;
+					}
+
+					if (sub.TryGetProperty("is_free_license", out JsonElement free) && (free.ValueKind == JsonValueKind.True)) {
+						continue;
+					}
+
+					long price = sub.TryGetProperty("price_in_cents_with_discount", out JsonElement p) && p.TryGetInt64(out long cents) ? cents : 0;
+					subs.Add((package, Math.Max(0, price)));
+				}
+			}
+
+			uint exact = subs.FirstOrDefault(s => (priceCents > 0) && (s.Price == priceCents)).Package;
+
+			if (exact > 0) {
+				return exact;
+			}
+
+			// One package and nothing to confuse it with: that's the app's own. Several at another price (an edition,
+			// a DLC, a bundle) are never guessed at - buying the wrong one is worse than not buying.
+			return subs.Count == 1 ? subs[0].Package : null;
+		} catch (JsonException) {
+			return null;
+		}
 	}
 
 	/// <summary>

@@ -27553,6 +27553,72 @@ await CommandSweep.RunAsync(Check);
 	}
 }
 
+// ── 1.9.0: buying games - the wallet-only checkout, against scripted answers; nothing reaches Steam ──
+{
+	NocatFarm.Core.StoreGame BgOffer(long cents, int currency = 20) => new(10, "Ten", cents, currency, false, false, false, false);
+
+	async Task<(NocatFarm.Core.GamePurchase Answer, ScriptedCheckoutWeb Web)> BgBuy(ScriptedCheckoutWeb web, long cents = 100, int currency = 20) =>
+		(await new NocatFarm.Core.GameCheckout(web).BuyAsync(BgOffer(cents, currency), CancellationToken.None), web);
+
+	var bgBuyOk = new ScriptedCheckoutWeb();
+	var (bgOkAnswer, bgOkWeb) = await BgBuy(bgBuyOk);
+	Check("game checkout: a wallet purchase is Done only when the balance falls, and the cart is cleared",
+		bgOkAnswer is { Result: NocatFarm.Core.GameBuyResult.Done, PaidCents: 100, TransId: "555" }
+		&& (bgOkWeb.Added == 1) && (bgOkWeb.Initialized == 1) && (bgOkWeb.Finalized == 1) && (bgOkWeb.Cleared == 1) && (bgOkWeb.Balance == 900),
+		$"{bgOkAnswer}; {bgOkWeb}");
+
+	var bgExternal = new ScriptedCheckoutWeb {
+		PriceBody = "{\"success\":1,\"base\":100,\"currencycode\":20,\"externalurl\":\"https://pay.example.invalid/\"}"
+	};
+	var (bgExternalAnswer, bgExternalWeb) = await BgBuy(bgExternal);
+	Check("game checkout: an external payment URL stops it, is never followed, and nothing is finalized",
+		bgExternalAnswer is { Result: NocatFarm.Core.GameBuyResult.ExternalPayment, PaidCents: 0 } && (bgExternalWeb.Finalized == 0) && (bgExternalWeb.Balance == 1000),
+		$"{bgExternalAnswer}; {bgExternalWeb}");
+
+	var bgUnchanged = new ScriptedCheckoutWeb { SpendOnFinalize = 0 };
+	var (bgUnchangedAnswer, bgUnchangedWeb) = await BgBuy(bgUnchanged);
+	Check("game checkout: Steam saying success without the wallet falling is Failed, not Done",
+		bgUnchangedAnswer is { Result: NocatFarm.Core.GameBuyResult.Failed, PaidCents: 0 } && bgUnchangedAnswer.Reason.Contains("wallet didn't go down", StringComparison.Ordinal)
+		&& (bgUnchangedWeb.Finalized == 1),
+		$"{bgUnchangedAnswer}; {bgUnchangedWeb}");
+
+	var bgPoor = new ScriptedCheckoutWeb { Balance = 50 };
+	var (bgPoorAnswer, bgPoorWeb) = await BgBuy(bgPoor);
+	Check("game checkout: a wallet that doesn't hold enough stops before the cart or a transaction",
+		bgPoorAnswer.Result == NocatFarm.Core.GameBuyResult.InsufficientFunds && (bgPoorWeb.Added == 0) && (bgPoorWeb.Initialized == 0),
+		$"{bgPoorAnswer}; {bgPoorWeb}");
+
+	var bgMethod = new ScriptedCheckoutWeb { InitBody = "{\"success\":1,\"transid\":\"556\",\"paymentmethod\":\"creditcard\"}" };
+	var (bgMethodAnswer, bgMethodWeb) = await BgBuy(bgMethod);
+	Check("game checkout: any payment method but the wallet is a Review, and nothing is finalized",
+		bgMethodAnswer is { Result: NocatFarm.Core.GameBuyResult.Review, PaidCents: 0 } && (bgMethodWeb.Finalized == 0),
+		$"{bgMethodAnswer}; {bgMethodWeb}");
+
+	var bgRegion = new ScriptedCheckoutWeb();
+	var (bgRegionAnswer, bgRegionWeb) = await BgBuy(bgRegion, currency: 1);
+	Check("game checkout: a game priced in another money than the wallet is refused before the cart",
+		bgRegionAnswer.Result == NocatFarm.Core.GameBuyResult.Refused && (bgRegionWeb.Added == 0), $"{bgRegionAnswer}; {bgRegionWeb}");
+
+	var bgMoney = new ScriptedCheckoutWeb { PriceBody = "{\"success\":1,\"base\":100,\"currencycode\":1}" };
+	var (bgMoneyAnswer, bgMoneyWeb) = await BgBuy(bgMoney);
+	Check("game checkout: a final price in another money than the wallet is refused, and nothing is finalized",
+		bgMoneyAnswer.Result == NocatFarm.Core.GameBuyResult.Refused && (bgMoneyWeb.Finalized == 0), $"{bgMoneyAnswer}; {bgMoneyWeb}");
+
+	var bgStrings = new ScriptedCheckoutWeb {
+		SpendOnFinalize = 1000,
+		InitBody = "{\"success\":true,\"transactionid\":\"557\"}",
+		PriceBody = "{\"success\":\"1\",\"base\":\"9.99\",\"tax\":\"0.01\",\"discount\":\"0.00\",\"currencycode\":\"20\"}"
+	};
+	var (bgStringsAnswer, _) = await BgBuy(bgStrings, cents: 1000);
+	Check("game checkout: numbers Steam writes as strings are read - a 10.00 total and an id",
+		bgStringsAnswer is { Result: NocatFarm.Core.GameBuyResult.Done, PaidCents: 1000, TransId: "557" }, $"{bgStringsAnswer}");
+
+	var bgFakeStore = new FakeGameStore();
+	bgFakeStore.Answers.Add(new NocatFarm.Core.GamePurchase(NocatFarm.Core.GameBuyResult.Done, "", 100, 20, "557"));
+	var bgFakeAnswer = await bgFakeStore.BuyAsync(BgOffer(100), CancellationToken.None);
+	Check("games: the fake store answers a purchase through the same interface", (bgFakeAnswer.Result == NocatFarm.Core.GameBuyResult.Done) && bgFakeStore.Bought.SequenceEqual([10u]));
+}
+
 // ── 1.8.2: the wake time while asleep, and the end of a sitting ──
 {
 	string wkRepo = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..");
@@ -41981,4 +42047,87 @@ sealed class FakeGameStore : NocatFarm.Core.IGameStore {
 
 		return Task.FromResult(Games.GetValueOrDefault(app));
 	}
+
+	/// <summary>What a purchase is told to answer, one per attempt - the game-buying checks never reach Steam.</summary>
+	public List<NocatFarm.Core.GamePurchase> Answers { get; } = [];
+
+	/// <summary>The apps it was asked to buy, in order.</summary>
+	public List<uint> Bought { get; } = [];
+
+	public Task<NocatFarm.Core.GamePurchase> BuyAsync(NocatFarm.Core.StoreGame game, CancellationToken ct) {
+		Bought.Add(game.App);
+
+		return Task.FromResult(Answers.Count > 0
+			? Answers[Math.Min(Bought.Count - 1, Answers.Count - 1)]
+			: new NocatFarm.Core.GamePurchase(NocatFarm.Core.GameBuyResult.Failed, "no scripted answer"));
+	}
+}
+
+/// <summary>The checkout's web session and wallet, scripted - the game purchase checks never reach Steam.</summary>
+sealed class ScriptedCheckoutWeb : NocatFarm.Core.IGameCheckoutWeb {
+	public long Balance { get; set; } = 1000;
+	public int Currency { get; set; } = 20;
+	public uint Package { get; set; } = 7;
+	public long SpendOnFinalize { get; set; } = 100;
+	public bool AddOk { get; set; } = true;
+	public string InitBody { get; set; } = "{\"success\":1,\"transid\":555}";
+	public string PriceBody { get; set; } = "{\"success\":1,\"base\":100,\"tax\":0,\"discount\":0,\"currencycode\":20}";
+	public string StatusBody { get; set; } = "{\"success\":1,\"purchaseresultdetail\":0}";
+	public string FinalizeBody { get; set; } = "{\"success\":1,\"purchaseresultdetail\":0}";
+
+	public int Added { get; private set; }
+	public int Initialized { get; private set; }
+	public int Finalized { get; private set; }
+	public int Cleared { get; private set; }
+	public int Countries { get; private set; }
+
+	public string Country => "US";
+
+	public Task<NocatFarm.Modules.CardMarket.Wallet?> WalletAsync(CancellationToken ct) =>
+		Task.FromResult<NocatFarm.Modules.CardMarket.Wallet?>(new NocatFarm.Modules.CardMarket.Wallet(Balance, Currency, false, 0));
+
+	public Task<uint?> PackageAsync(uint app, long priceCents, CancellationToken ct) => Task.FromResult<uint?>(Package);
+
+	public Task<string?> GetAsync(Uri url, Uri referer, CancellationToken ct) =>
+		Task.FromResult<string?>(url.AbsolutePath.Contains("getfinalprice", StringComparison.Ordinal) ? PriceBody
+			: url.AbsolutePath.Contains("transactionstatus", StringComparison.Ordinal) ? StatusBody : "<html>checkout</html>");
+
+	public Task<string?> PostAsync(Uri url, Dictionary<string, string> form, Uri referer, CancellationToken ct) {
+		if (url.AbsolutePath.Contains("inittransaction", StringComparison.Ordinal)) {
+			Initialized++;
+
+			return Task.FromResult<string?>(InitBody);
+		}
+
+		if (url.AbsolutePath.Contains("finalizetransaction", StringComparison.Ordinal)) {
+			Finalized++;
+			Balance = Math.Max(0, Balance - SpendOnFinalize);
+
+			return Task.FromResult<string?>(FinalizeBody);
+		}
+
+		return Task.FromResult<string?>("{}");
+	}
+
+	public Task<bool> AddToCartAsync(uint package, string country, CancellationToken ct) {
+		Added++;
+
+		return Task.FromResult(AddOk);
+	}
+
+	public Task ClearCartAsync(CancellationToken ct) {
+		Cleared++;
+
+		return Task.CompletedTask;
+	}
+
+	public Task SetCountryAsync(string country, CancellationToken ct) {
+		Countries++;
+
+		return Task.CompletedTask;
+	}
+
+	public Task DelayAsync(TimeSpan wait, CancellationToken ct) => Task.CompletedTask;
+
+	public override string ToString() => $"added {Added}, init {Initialized}, final {Finalized}, cleared {Cleared}, balance {Balance}";
 }

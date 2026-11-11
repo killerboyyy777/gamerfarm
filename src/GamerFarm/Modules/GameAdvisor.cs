@@ -6,7 +6,7 @@ namespace NocatFarm.Modules;
 /// <summary>
 /// Which games buying would buy now, read only: the wallet balance, the day's and the week's limits, and every game it
 /// can find with a trading-card set - priced at the store, ranked by what its cards are worth back, and capped by the
-/// settings. Nothing here spends anything; Stage 2 adds the checkout that acts on this plan.
+/// settings. Nothing here spends anything; Core/GameCheckout.cs acts on this plan.
 /// </summary>
 /// <remarks>
 /// Prices for cards are only ever the ones already held (<see cref="MarketQuotes.Of"/> and
