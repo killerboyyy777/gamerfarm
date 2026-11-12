@@ -27861,6 +27861,17 @@ await CommandSweep.RunAsync(Check);
 			&& NocatFarm.Config.Settings.FindBot("BuyGamesPackages") is { ShowWhen: "BuyGames=true" },
 			$"off: {string.Join(",", bgNoPackPlan.Candidates.Select(static c => $"{c.App}:{c.PackageId}"))}");
 
+		// The store's own cheapest rows: a pack there needs no app read, and can be the only thing worth buying.
+		var bgCheapStore = new FakeGameStore();
+		bgCheapStore.CheapPacks.Add(new NocatFarm.Core.StorePackage(96994, "NukGames Pack", 3, 20, [20, 21]));
+		var bgCheapPlan = await NocatFarm.Modules.GameAdvisor.MakeAsync(new NocatFarm.Config.BotConfig {
+			BuyGames = true, BuyGamesDailyLimit = -1f, BuyGamesWeeklyLimit = -1f, BuyGamesMaxPrice = 0f
+		}, 20, 1000, bgTier, bgCheapStore, static _ => false, [bgSet20, bgSet21], bgNow, CancellationToken.None);
+		Check("games plan: the store's cheapest packs are weighed even when no single game priced, and cost one read",
+			bgCheapPlan.Candidates is [{ App: 20, PackageId: 96994, PriceCents: 3, BundleApps.Count: 2 }]
+			&& (bgCheapStore.CheapPackLookups == 1) && (bgCheapStore.Lookups == 2),
+			$"{string.Join(" | ", bgCheapPlan.Candidates.Select(static c => $"{c.App}:{c.PackageId}:{c.PriceCents}"))}; lookups {bgCheapStore.Lookups}, packs {bgCheapStore.CheapPackLookups}");
+
 		// ── the automatic loop: the switch, its go-ahead and "without asking" together ──
 		var bgLoopBot = new NocatFarm.Core.Bot("gb-loop", new NocatFarm.Config.BotConfig { BuyGames = true, BuyGamesUnattended = true });
 		NocatFarm.Core.BuyGamesLedger.Of("gb-loop").SetOk(true);
@@ -27977,6 +27988,12 @@ await CommandSweep.RunAsync(Check);
 	Check("games store: a packagedetails answer gives every package's name and apps, text ids included",
 		bgContents.Count == 1 && bgContents[96994] is { Name: "NukGames Pack", Apps.Count: 3 } && bgContents[96994].Apps.Contains(562360u),
 		$"{bgContents.Count}");
+
+	var bgCheap = NocatFarm.Core.SteamGameStore.ParseCheapestPacks(
+		"""{ "results_html": "<a href=\"/store/sub/96994/\" data-ds-packageid=\"96994\" data-ds-appid=\"438480,451160,539720,562360,636150\" data-ds-itemkey=\"Sub_96994\"><span class=\"title\">NukGames Pack</span><div data-price-final=\"49\"></div></a><a data-ds-itemkey=\"App_730\" data-ds-appid=\"730\"><span class=\"title\">Counter-Strike 2</span><div data-price-final=\"0\"></div></a>" }""", 20);
+	Check("games store: the store's search gives its cheapest packs with every app and price in the wallet's money",
+		bgCheap is [{ Id: 96994, Name: "NukGames Pack", PriceCents: 49, Apps.Count: 5 }] && bgCheap[0].Apps.Contains(562360u),
+		$"{bgCheap.Count}");
 
 	var bgExternal = new ScriptedCheckoutWeb {
 		PriceBody = "{\"success\":1,\"base\":100,\"currencycode\":20,\"externalurl\":\"https://pay.example.invalid/\"}"
@@ -42534,6 +42551,16 @@ sealed class FakeGameStore : NocatFarm.Core.IGameStore {
 		PackageLookups++;
 
 		return Task.FromResult(Packages.GetValueOrDefault(app) ?? (IReadOnlyList<NocatFarm.Core.StorePackage>)[]);
+	}
+
+	/// <summary>The cheapest packs the store lists, and how often it was asked for them.</summary>
+	public List<NocatFarm.Core.StorePackage> CheapPacks { get; } = [];
+	public int CheapPackLookups { get; private set; }
+
+	public Task<IReadOnlyList<NocatFarm.Core.StorePackage>> CheapestPacksAsync(int currency, CancellationToken ct) {
+		CheapPackLookups++;
+
+		return Task.FromResult<IReadOnlyList<NocatFarm.Core.StorePackage>>(CheapPacks);
 	}
 
 	public Task<bool> CountsForProfileAsync(NocatFarm.Core.StoreGame game, CancellationToken ct) =>

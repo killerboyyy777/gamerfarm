@@ -978,8 +978,9 @@ public sealed class BotConfig {
 	/// <summary>
 	/// Also look at the packages (Steam's "subs") a game is sold through: one package can be several games and their
 	/// soundtracks for less than any of them, and it is one cart item whose card drops, booster crafts and Steam Points
-	/// all add up. On by default. The most it may pay per game doesn't apply to a package - its price covers everything
-	/// in it; the day's and the week's limits still do.
+	/// all add up. On by default. It also reads the store's own search, its discounted rows cheapest first, where a pack
+	/// that carries a discount of its own is listed as a row of its own. The most it may pay per game doesn't apply to a
+	/// package - its price covers everything in it; the day's and the week's limits still do.
 	/// </summary>
 	public bool BuyGamesPackages { get; set; } = true;
 

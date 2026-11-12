@@ -35,7 +35,7 @@ All under the account's **Buying cards** section.
 | The cards are counted at | average drops | In levels mode: average drops, or the worst pull (the cheapest card every time) |
 | Only buy games with card drops | on | In "more games" mode, skip games with no known trading-card set |
 | Look for bundles too | on | Also weigh the bundles Steam lists on a game's page - one cart item of several games |
-| Look for packages too | on | Also weigh the packages (Steam's "subs") a game is sold through - a pack of several games and their soundtracks, one cart item |
+| Look for packages too | on | Also weigh the packages (Steam's "subs") a game is sold through, and the packs in the store's search, its discounted rows cheapest first - one cart item of several games |
 | Also consider these games | empty | Extra app ids besides the games with a known card set |
 | Spend at most a day on games | 5.00 | Rolling 24-hour limit, in the wallet's currency; below 0 = no limit |
 | Spend at most a week on games | 20.00 | Rolling 7-day limit; below 0 = no limit |
@@ -80,6 +80,10 @@ Steam only names a bundle on the store page of a game inside it, so the advisor 
 games it priced for the bundles they sit in. It also asks the cheapest few games for the packages they are sold through
 (`packagedetails`), and keeps any package holding more than one app. A pack is then weighed like one purchase:
 
+- Packs are also read straight from the store's own search, its discounted rows cheapest first (the first two pages of
+  a hundred): a pack that carries a discount of its own is listed there as a row of its own, and each row already names
+  every app the pack grants, so no further read is needed. Packs costing more than what may be spent right now are
+  dropped, and the most six of them are weighed per look.
 - Everything its games drop, craft and earn counts together: the card drops, the booster profit, and the Steam Points
   from the pack's own price.
 - The apps inside it must not already be owned - a soundtrack is fine, it just earns nothing - and its games are not

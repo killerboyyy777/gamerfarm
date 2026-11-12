@@ -1909,7 +1909,7 @@ public static partial class Settings {
 			"Also weighs the bundles Steam lists on a game's store page. A bundle is one cart item that can hold several games, and everything they drop, craft and earn adds up. The most it may pay for one game doesn't apply to a bundle, because its price covers all of them; the day's and the week's limits still do. On by default.",
 			ShowWhen: "BuyGames=true", Group: "What it does", Part: SecBuy),
 		new("BuyGamesPackages", "Look for packages too", SecItems, SettingKind.Bool,
-			"Also weighs the packages (Steam's \"subs\") a game is sold through. One package can be several games and their soundtracks for less than any of them, and it is one cart item that grants everything in it. The most it may pay for one game doesn't apply to a package, because its price covers all of them; the day's and the week's limits still do. On by default.",
+			"Also weighs the packages (Steam's \"subs\") a game is sold through, and the packs in the store's own search, its discounted rows cheapest first - a pack that carries a discount of its own is listed there as a row of its own. One package can be several games and their soundtracks for less than any of them, and it is one cart item that grants everything in it. The most it may pay for one game doesn't apply to a package, because its price covers all of them; the day's and the week's limits still do. On by default.",
 			ShowWhen: "BuyGames=true", Group: "What it does", Part: SecBuy),
 		new("BuyGamesApps", "Also consider these games", SecItems, SettingKind.AppIds,
 			"Extra game IDs to consider buying, besides the games with a known trading-card set that the advisor finds by itself.",

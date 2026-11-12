@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace NocatFarm.Core;
 
@@ -99,6 +100,13 @@ public interface IGameStore {
 	/// store didn't answer.
 	/// </summary>
 	Task<IReadOnlyList<StorePackage>> PackagesForAsync(uint app, int currency, CancellationToken ct) =>
+		Task.FromResult<IReadOnlyList<StorePackage>>([]);
+
+	/// <summary>
+	/// The cheapest packages the store itself lists for sale, in the wallet's money - a store-wide look for packs, since
+	/// the cheapest ones are where several games for one small price are. Empty when none, or when the store didn't answer.
+	/// </summary>
+	Task<IReadOnlyList<StorePackage>> CheapestPacksAsync(int currency, CancellationToken ct) =>
 		Task.FromResult<IReadOnlyList<StorePackage>>([]);
 }
 
@@ -366,6 +374,114 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 		}
 
 		return found;
+	}
+
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<(string Country, int Currency), (IReadOnlyList<StorePackage> Packs, DateTime At)> CheapPacksKept = new();
+
+	/// <summary>
+	/// The store search, its discounted rows cheapest first. A pack that carries a discount of its own is listed there as
+	/// a row of its own (plain rows are games), and each row already names the apps it grants. Two pages of a hundred,
+	/// kept six hours per country because discounts move; a failed page stops the scan.
+	/// </summary>
+	public async Task<IReadOnlyList<StorePackage>> CheapestPacksAsync(int currency, CancellationToken ct) {
+		string country = bot.Country.Length == 2 ? bot.Country : "";
+		(string Country, int Currency) key = (country, currency);
+
+		if (CheapPacksKept.TryGetValue(key, out (IReadOnlyList<StorePackage> Packs, DateTime At) kept)
+			&& (DateTime.UtcNow - kept.At < TimeSpan.FromHours(6))) {
+			return kept.Packs;
+		}
+
+		List<StorePackage> packs = [];
+
+		for (int page = 0; page < 2; page++) {
+			string url = "https://store.steampowered.com/search/results/?query&start="
+				+ (page * 100).ToString(CultureInfo.InvariantCulture)
+				+ "&count=100&dynamic_data=&sort_by=Price_ASC&specials=1&infinite=1&l=english"
+				+ (country.Length > 0 ? "&cc=" + country : "");
+
+			(int status, string? body) = await GameCatalog.StoreGetAsync(url, Gap, ct).ConfigureAwait(false);
+
+			if (status != 200) {
+				break;
+			}
+
+			packs.AddRange(ParseCheapestPacks(body, currency));
+		}
+
+		IReadOnlyList<StorePackage> cheapest = [.. packs.DistinctBy(static p => p.Id)];
+		CheapPacksKept[key] = (cheapest, DateTime.UtcNow);
+
+		return cheapest;
+	}
+
+	/// <summary>
+	/// The packages in a store search answer: each "sub" row's id, name, price in the wallet's money, and every app it
+	/// grants (Steam writes them as a comma-separated list on the row). Free rows and single-app subs are left out.
+	/// </summary>
+	public static IReadOnlyList<StorePackage> ParseCheapestPacks(string? json, int currency) {
+		if (string.IsNullOrWhiteSpace(json)) {
+			return [];
+		}
+
+		string? html;
+
+		try {
+			using JsonDocument doc = JsonDocument.Parse(json);
+
+			html = doc.RootElement.TryGetProperty("results_html", out JsonElement rows) && (rows.ValueKind == JsonValueKind.String)
+				? rows.GetString()
+				: null;
+		} catch (JsonException) {
+			return [];
+		}
+
+		if (string.IsNullOrWhiteSpace(html)) {
+			return [];
+		}
+
+		Regex row = new("<a\\b[^>]*data-ds-itemkey=\"Sub_(?<id>\\d+)\"[^>]*>(?<body>.*?)</a>",
+			RegexOptions.Singleline | RegexOptions.CultureInvariant);
+		Regex name = new("class=\"title\"[^>]*>(?<name>[^<]*)<", RegexOptions.CultureInvariant);
+		Regex apps = new("data-ds-appid=\"(?<apps>[0-9,]+)\"", RegexOptions.CultureInvariant);
+		Regex price = new("data-price-final=\"(?<cents>\\d+)\"", RegexOptions.CultureInvariant);
+		List<StorePackage> packs = [];
+
+		foreach (Match m in row.Matches(html)) {
+			if (!uint.TryParse(m.Groups["id"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out uint id)) {
+				continue;
+			}
+
+			Match cents = price.Match(m.Value);
+			Match list = apps.Match(m.Value);
+
+			if (!cents.Success || !long.TryParse(cents.Groups["cents"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out long priceCents) || (priceCents <= 0)) {
+				continue;
+			}
+
+			List<uint> included = [];
+
+			if (list.Success) {
+				foreach (string part in list.Groups["apps"].Value.Split(',', StringSplitOptions.RemoveEmptyEntries)) {
+					if (uint.TryParse(part, NumberStyles.None, CultureInfo.InvariantCulture, out uint app) && (app != 0) && !included.Contains(app)) {
+						included.Add(app);
+					}
+				}
+			}
+
+			// A single app's package is the game's own buy button - the advisor already prices those.
+			if (included.Count < 2) {
+				continue;
+			}
+
+			string title = name.Match(m.Groups["body"].Value) is { Success: true } found
+				? System.Net.WebUtility.HtmlDecode(found.Groups["name"].Value).Trim()
+				: "";
+
+			packs.Add(new StorePackage(id, title, priceCents, currency, included));
+		}
+
+		return packs;
 	}
 
 	/// <summary>

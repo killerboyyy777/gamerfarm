@@ -140,8 +140,8 @@ Steam sales, and free games if you turn that on.
   to raise the profile's game count (cheapest first, or only games whose card drops are worth more than the price,
   with Steam Points counted toward badge levels) or to buy games worth their card drops and booster packs. It buys only
   paid games that count toward the profile, can be limited to games with card drops, also weighs the bundles Steam
-  lists on a game's page and the multi-game packages a game is sold through (and everything inside them), and keeps
-  the same daily/weekly
+  lists on a game's page, the multi-game packages a game is sold through and the discounted packs in the store's search
+  (and everything inside them), and keeps the same daily/weekly
   limits as buying cards. It previews first; "Buy games without asking" lets it run on its own every few hours.
   [How it works](docs/game-buying.md).
 - Smaller extras: pricing your next Steam level, making booster packs from gems, crafting badges and product keys.

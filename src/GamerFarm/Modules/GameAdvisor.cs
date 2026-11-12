@@ -43,6 +43,9 @@ public static class GameAdvisor {
 	/// <summary>Games asked for the packages they're sold through, and packages weighed, in one plan.</summary>
 	public const int MaxPackageApps = 3, MaxPackages = 6;
 
+	/// <summary>Packs from the store's own cheapest rows that are weighed in one plan.</summary>
+	public const int MaxStorePacks = 6;
+
 	/// <summary>
 	/// One account's plan: its wallet read the way buying cards reads it, its library for what it owns, the set finder for
 	/// games with a known card set, and the Steam store for prices. Read only.
@@ -348,10 +351,10 @@ public static class GameAdvisor {
 		// Packages: a Steam "sub" can be a pack of several games sold as one item - a 0.49 pack of four games costs less
 		// than any of them. Steam only names the ones an app is sold through, so the cheapest few games priced are asked
 		// for theirs, and a package holding more than one app is weighed exactly like a bundle (the cart takes its id).
-		if (cfg.BuyGamesPackages && (priced.Count > 0)) {
-			HashSet<uint> seenPacks = [];
-			int weighed = 0;
+		HashSet<uint> seenPacks = [];
+		int weighed = 0;
 
+		if (cfg.BuyGamesPackages && (priced.Count > 0)) {
 			foreach (GameCandidate game in priced.Where(static c => c.BundleApps is null).OrderBy(static c => c.PriceCents).ThenBy(static c => c.App).Take(MaxPackageApps)) {
 				if (weighed >= MaxPackages) {
 					break;
@@ -378,6 +381,35 @@ public static class GameAdvisor {
 					if (WeighPack(cfg, owned, sets, currency, nowUtc, levelCents, game.App, pack.Id, pack.Name, pack.PriceCents, pack.Apps, skipped) is { } packageWorth) {
 						priced.Add(packageWorth);
 					}
+				}
+			}
+		}
+
+		// The store's own cheapest packs: its search, cheapest first, already names the apps each row grants, so a pack
+		// found that way costs no further read. Only packs inside what may be spent now are weighed.
+		if (cfg.BuyGamesPackages && (room > 0)) {
+			IReadOnlyList<StorePackage> cheapest;
+
+			try {
+				cheapest = await store.CheapestPacksAsync(currency, ct).ConfigureAwait(false);
+			} catch (OperationCanceledException) when (ct.IsCancellationRequested) {
+				throw;
+			} catch (Exception e) {
+				Log.Debug(new Said("cheapest pack lookup failed: {0}", Log.Describe(e)));
+				cheapest = [];
+			}
+
+			int cheapLooked = 0;
+
+			foreach (StorePackage pack in cheapest) {
+				if ((cheapLooked >= MaxStorePacks) || (pack.PriceCents > room) || !seenPacks.Add(pack.Id)) {
+					continue;
+				}
+
+				cheapLooked++;
+
+				if (WeighPack(cfg, owned, sets, currency, nowUtc, levelCents, pack.Apps[0], pack.Id, pack.Name, pack.PriceCents, pack.Apps, skipped) is { } storeWorth) {
+					priced.Add(storeWorth);
 				}
 			}
 		}
