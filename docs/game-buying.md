@@ -9,7 +9,7 @@ Two reasons to buy:
 - **Levels**: only a game whose card drops are worth more than it costs, so the money comes back in cards.
 
 Steam Points earned by the purchase are counted toward badge levels in levels mode when "Spend Steam Points on levels"
-is on: 1,000 points buy one level (100 XP), so the points are valued at what the cheapest next badge level costs.
+is on: 1,000 points buy one badge level of 100 XP (one Steam profile level only at low levels, where a level costs 100 XP; above them a level costs 200, then 300, and so on), so the points are valued at what the cheapest next badge level costs.
 
 ## Turning it on
 
@@ -86,11 +86,15 @@ Card drops are an estimate, used only to rank and to allow a levels-mode purchas
 
 - A game drops about **half its set's cards**. Each card is valued at what selling one pays after Steam's fee, from
   prices already held (no market request is made by the advisor).
-- **Average drops**: the mean of the priced cards, times the number of drops.
+- **Average drops**: counted exactly like a booster's average pull, just with more cards - the mean of the priced cards
+  times the drops, plus a 1% chance one of the drops is a foil instead (`BoosterMath.AverageFor`). A foil with no price
+  held counts as no dearer than its normal card.
 - **Worst pull**: the cheapest priced card, every time - the same floor the booster option uses.
+- In levels mode a game is also taken when it costs less than buying half its cards, and Steam Points count on that
+  path too: the game's price is compared with the half-set cost plus what its points are worth.
 - **Booster profit** is counted too: the sealed pack's net after Steam's fee, minus what the gems it takes would fetch
   as a sack. It is a real cost, not a free pack.
-- **Steam Points**: 100 points per USD spent (the local price converted at the learned rate), 1,000 points per badge
+- **Steam Points**: 100 points per USD spent (the local price converted at the learned rate), 1,000 points per badge level (100 XP - one Steam profile level only at low levels, where a level costs 100 XP, and a fraction above them)
   level. Included in levels mode only while "Spend Steam Points on levels" is on.
 
 A game whose cards aren't priced can still be bought in "more games" mode; in levels mode it waits, because it can't be

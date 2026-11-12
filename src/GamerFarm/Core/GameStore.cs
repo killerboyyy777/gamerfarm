@@ -37,7 +37,10 @@ public enum GameBuyResult {
 	Review,
 
 	/// <summary>It didn't work, and what it did isn't certain: <see cref="GamePurchase.Spent"/> says whether money went.</summary>
-	Failed
+	Failed,
+
+	/// <summary>A dry run: the real checkout was followed to its final price, then the transaction was cancelled - nothing bought.</summary>
+	Probed
 }
 
 /// <summary>

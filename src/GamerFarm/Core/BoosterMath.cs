@@ -32,14 +32,22 @@ public static class BoosterMath {
 	/// average card, plus 1% of what a foil adds over a normal one (or takes away, a cheap foil). No foil worth known counts as none, so it never hopes for
 	/// a foil it hasn't priced. Zero when no normal cards are known.
 	/// </summary>
-	public static long Average(IReadOnlyList<long> normalReceive, IReadOnlyList<long> foilReceive) {
-		if (normalReceive.Count == 0) {
+	public static long Average(IReadOnlyList<long> normalReceive, IReadOnlyList<long> foilReceive) => AverageFor(3, normalReceive, foilReceive);
+
+	/// <summary>
+	/// The average worth of <paramref name="cards"/> random cards of a set, each card as likely as the next: the average
+	/// card times the cards, plus the 1% chance one of them is a foil instead. The same sum as <see cref="Average"/>, for
+	/// anything that draws more or fewer than a pack's 3 cards (a game's card drops, say). No foil worth known counts as
+	/// none, so it never hopes for a foil it hasn't priced.
+	/// </summary>
+	public static long AverageFor(int cards, IReadOnlyList<long> normalReceive, IReadOnlyList<long> foilReceive) {
+		if ((cards <= 0) || (normalReceive.Count == 0)) {
 			return 0;
 		}
 
 		double normal = normalReceive.Average();
 		double foil = foilReceive.Count > 0 ? foilReceive.Average() : normal;   // a foil no dearer than its normal card, when not priced
-		double ev = (3.0 * normal) + (FoilChance * (foil - normal));
+		double ev = (cards * normal) + (FoilChance * (foil - normal));
 
 		return (long) Math.Round(ev, MidpointRounding.ToZero);
 	}

@@ -25,7 +25,22 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 	/// <summary>How long a finalized purchase is given to show on the wallet page.</summary>
 	private static readonly TimeSpan SettleWait = TimeSpan.FromSeconds(4);
 
-	public async Task<GamePurchase> BuyAsync(StoreGame game, CancellationToken ct) {
+	public async Task<GamePurchase> BuyAsync(StoreGame game, CancellationToken ct) => await RunAsync(game, probe: false, steps: null, ct).ConfigureAwait(false);
+
+	/// <summary>
+	/// Follow the real checkout to its final price and stop there: no finalizetransaction, the transaction is cancelled.
+	/// The same calls a purchase makes, so a live run proves the form, the country, the wallet method and the price before
+	/// any money is at stake - ASFEnhance's fake purchase.
+	/// </summary>
+	public async Task<CheckoutProbe> ProbeAsync(StoreGame game, CancellationToken ct) {
+		List<CheckoutStep> steps = [];
+		GamePurchase answer = await RunAsync(game, probe: true, steps, ct).ConfigureAwait(false);
+
+		return new CheckoutProbe(answer, steps);
+	}
+
+	private async Task<GamePurchase> RunAsync(StoreGame game, bool probe, List<CheckoutStep>? steps, CancellationToken ct) {
+		void Step(string what, string detail) => steps?.Add(new CheckoutStep(what, detail));
 		if (ct.IsCancellationRequested) {
 			return new(GameBuyResult.Failed, "stopped before anything was sent");
 		}
@@ -58,6 +73,8 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 			return new(GameBuyResult.Refused, "it has no Steam wallet to buy with");
 		}
 
+		Step("wallet", $"{BuyPlan.Money(wallet.Balance, wallet.Currency)} ({MarketQuotes.Code(wallet.Currency)})");
+
 		if (game.Currency != wallet.Currency) {
 			return new(GameBuyResult.Refused, $"the store priced it in {MarketQuotes.Code(game.Currency)}, not the wallet's money");
 		}
@@ -79,6 +96,8 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 			package = found;
 		}
 
+		Step(bundle ? "bundle" : "package", bundle ? $"{game.App} (bundle)" : $"{package}");
+
 		string country = CountryOf(web.Country, wallet.Saved?.Country);
 
 		// The checkout page is the referer every step below is asked from.
@@ -86,15 +105,21 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 			return new(GameBuyResult.Failed, "the checkout page didn't answer");
 		}
 
+		Step("checkout", "page opened");
+
 		if (!await web.AddToCartAsync(package, bundle, country, ct).ConfigureAwait(false)) {
 			return new(GameBuyResult.Failed, "it couldn't add the game to the account cart");
 		}
+
+		Step("cart", $"added {(bundle ? "bundle" : "package")} {package}");
 
 		try {
 			// The store and the checkout have to agree on the wallet's country, or the final price comes in another money.
 			if (country.Length == 2) {
 				await web.SetCountryAsync(country, ct).ConfigureAwait(false);
 			}
+
+			Step("country", country.Length == 2 ? country : "not known");
 
 			string? initBody = await web.PostAsync(InitTransaction, InitForm(wallet, country), CheckoutPage, ct).ConfigureAwait(false);
 			InitAnswer init = ReadInit(initBody);
@@ -104,6 +129,7 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 			}
 
 			string transId = init.TransId;
+			Step("inittransaction", $"transaction {transId} with PaymentMethod=steamaccount");
 
 			string? priceBody = await web.GetAsync(FinalPriceUri(transId), CheckoutPage, ct).ConfigureAwait(false);
 			PriceAnswer price = ReadPrice(priceBody);
@@ -115,6 +141,8 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 			if (!price.Ok) {
 				return new(GameBuyResult.Failed, price.Reason, 0, wallet.Currency, transId);
 			}
+
+			Step("getfinalprice", $"{BuyPlan.Money(price.TotalCents, price.Currency)} in {MarketQuotes.Code(price.Currency)}");
 
 			if (price.Currency != wallet.Currency) {
 				return new(GameBuyResult.Refused,
@@ -144,6 +172,20 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 				return new(GameBuyResult.InsufficientFunds,
 					$"the wallet holds {BuyPlan.Money(before.Balance, before.Currency)}, less than the {BuyPlan.Money(price.TotalCents, before.Currency)} checkout asks - nothing was finalized",
 					0, before.Currency, transId);
+			}
+
+			Step("wallet check", $"{BuyPlan.Money(before.Balance, before.Currency)} covers it");
+
+			// A probe stops here: the transaction is cancelled instead of finalized. Nothing can be charged.
+			if (probe) {
+				bool cancelled = await web.CancelAsync(transId, ct).ConfigureAwait(false);
+				Step("cancel", cancelled ? "transaction cancelled, nothing was bought" : "Steam didn't confirm the cancellation");
+
+				return new(GameBuyResult.Probed,
+					cancelled
+						? $"dry run: the real checkout reached {BuyPlan.Money(price.TotalCents, price.Currency)} on the wallet, then the transaction was cancelled - nothing was bought"
+						: $"dry run: the real checkout reached {BuyPlan.Money(price.TotalCents, price.Currency)}, but the transaction couldn't be cancelled - check it on Steam",
+					0, wallet.Currency, transId);
 			}
 
 			// From here the purchase may go through: whatever the answer, it counts as spent until the wallet says otherwise.
@@ -489,6 +531,12 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 	}
 }
 
+/// <summary>One call a checkout probe made, and what came back.</summary>
+public sealed record CheckoutStep(string Name, string Detail);
+
+/// <summary>A dry run of the checkout: the never-finalized answer, and every call it made.</summary>
+public sealed record CheckoutProbe(GamePurchase Answer, IReadOnlyList<CheckoutStep> Steps);
+
 /// <summary>What buying a game needs from Steam's web session and the account's wallet. A scripted fake in the tests.</summary>
 internal interface IGameCheckoutWeb {
 	/// <summary>The country Steam signed the account in to ("US", "CA"...), or empty.</summary>
@@ -503,6 +551,9 @@ internal interface IGameCheckoutWeb {
 	Task<string?> GetAsync(Uri url, Uri referer, CancellationToken ct);
 
 	Task<string?> PostAsync(Uri url, Dictionary<string, string> form, Uri referer, CancellationToken ct);
+
+	/// <summary>Cancel a transaction the probe started instead of finalizing it. True when Steam said it was cancelled.</summary>
+	Task<bool> CancelAsync(string transId, CancellationToken ct) => Task.FromResult(false);
 
 	/// <summary>Add the package (or the bundle) to the account cart. False when Steam didn't take it.</summary>
 	Task<bool> AddToCartAsync(uint id, bool bundle, string country, CancellationToken ct);
@@ -534,6 +585,36 @@ internal sealed class BotCheckoutWeb(Bot bot) : IGameCheckoutWeb {
 
 	public Task<string?> PostAsync(Uri url, Dictionary<string, string> form, Uri referer, CancellationToken ct) =>
 		bot.Web.PostAllowingFailureAsync(url, form, referer, ct);
+
+	public async Task<bool> CancelAsync(string transId, CancellationToken ct) {
+		Uri page = new(GameCheckout.CheckoutRoot, "/checkout/");
+		string? body = await bot.Web.PostAllowingFailureAsync(new Uri(GameCheckout.CheckoutRoot, "/checkout/canceltransaction/"),
+			new Dictionary<string, string>(StringComparer.Ordinal) { ["transid"] = transId }, page, ct).ConfigureAwait(false);
+
+		Log.Debug(new Said("canceltransaction for {0}: {1}", transId, Log.Scrub(body ?? "(no answer)")));
+
+		if (body == null) {
+			return false;
+		}
+
+		try {
+			using JsonDocument doc = JsonDocument.Parse(body);
+
+			if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty("success", out JsonElement success)) {
+				return success.ValueKind switch {
+					JsonValueKind.True => true,
+					JsonValueKind.False => false,
+					JsonValueKind.Number when success.TryGetInt64(out long n) => n != 0,
+					JsonValueKind.String => !success.GetString()!.Equals("false", StringComparison.OrdinalIgnoreCase),
+					_ => true
+				};
+			}
+		} catch (JsonException) {
+			// Not JSON: Steam answered something, and the transaction is abandoned either way; a missing answer is the failure.
+		}
+
+		return true;
+	}
 
 	public async Task<bool> AddToCartAsync(uint id, bool bundle, string country, CancellationToken ct) {
 		// The cart service takes its JSON as a form field (input_json), so it goes over the ordinary form POST with the

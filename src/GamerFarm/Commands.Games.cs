@@ -11,10 +11,10 @@ namespace NocatFarm;
 /// ('games &lt;account&gt; on yes') and "Buy games without asking" is on. 'games preview' is always read only.
 /// </summary>
 public static partial class Commands {
-	internal const string GamesUsage = "games [account|all] | games preview [account|all] | games on <account> yes | games off <account> | games do <account>";
+	internal const string GamesUsage = "games [account|all] | games preview [account|all] | games probe <account> <app> | games on <account> yes | games off <account> | games do <account>";
 
 	/// <summary>What a 'games' line asks for.</summary>
-	public enum GamesAsk { List, Preview, On, Off, Do, Bad }
+	public enum GamesAsk { List, Preview, Probe, On, Off, Do, Bad }
 
 	/// <summary>
 	/// Read a 'games' line's words, in any order - from Steam chat the account's name comes straight after 'games'.
@@ -28,6 +28,7 @@ public static partial class Commands {
 		foreach (string word in args) {
 			GamesAsk? said = word.ToLowerInvariant() switch {
 				"preview" => GamesAsk.Preview,
+				"probe" => GamesAsk.Probe,
 				"on" => GamesAsk.On,
 				"off" => GamesAsk.Off,
 				"do" or "now" => GamesAsk.Do,
@@ -44,6 +45,8 @@ public static partial class Commands {
 				yes = true;
 			} else if (word.Equals("all", StringComparison.OrdinalIgnoreCase) && !all && (who == null)) {
 				all = true;
+			} else if ((ask == GamesAsk.Probe) && uint.TryParse(word, NumberStyles.None, CultureInfo.InvariantCulture, out _)) {
+				// 'games probe <account> <appid>': the app id is found again by the handler.
 			} else if ((who == null) && !all) {
 				who = word;
 			} else {
@@ -51,8 +54,8 @@ public static partial class Commands {
 			}
 		}
 
-		// Turning it on, off or buying now: one account by name, never every account at once.
-		if ((ask is GamesAsk.On or GamesAsk.Off or GamesAsk.Do) && (all || (who == null))) {
+		// Turning it on, off, probing or buying now: one account by name, never every account at once.
+		if ((ask is GamesAsk.On or GamesAsk.Off or GamesAsk.Do or GamesAsk.Probe) && (all || (who == null))) {
 			return (GamesAsk.Bad, null, false);
 		}
 
@@ -64,7 +67,7 @@ public static partial class Commands {
 	/// Looking and turning it off are fine from anywhere.
 	/// </summary>
 	internal static bool GamesNeedsOwner(string[] args) =>
-		args.Any(static a => a.ToLowerInvariant() is "on" or "do" or "now" or "yes" or "ok");
+		args.Any(static a => a.ToLowerInvariant() is "on" or "do" or "now" or "yes" or "ok" or "probe");
 
 	private static async Task<string> BuyGamesAsync(BotManager mgr, string[] args) {
 		(GamesAsk ask, string? who, bool yes) = ParseGames(args);
@@ -123,6 +126,30 @@ public static partial class Commands {
 				$"{bot.Name}: 'games preview {bot.Name}' shows what it would buy; 'games do {bot.Name}' buys now (it also needs \"{Settings.FindBot(nameof(BotConfig.BuyGamesUnattended))?.Label ?? "Buy games without asking"}\" on), one look at a time; the automatic look runs every {Math.Clamp(bot.Cfg.BuyGamesCheckHours, 1, 168)}h while that is on; 'games off {bot.Name}' turns it off.");
 		}
 
+		if (ask == GamesAsk.Probe) {
+			if (mgr.Get(who!) is not { } bot) {
+				return NoSuchAccount(mgr, who!);
+			}
+
+			uint app = 0;
+
+			foreach (string word in args) {
+				if (uint.TryParse(word, NumberStyles.None, CultureInfo.InvariantCulture, out uint id) && (id != 0)) {
+					app = id;
+
+					break;
+				}
+			}
+
+			if (app == 0) {
+				return $"{bot.Name}: which game? 'games probe {bot.Name} <appid>' - it follows the real checkout to the final price, then cancels it.";
+			}
+
+			return await SlowAsync(new Slow("games", "checking a game's checkout without buying", Key: "games probe"), [bot],
+				b => GamesProbeAsync(b, app, CancellationToken.None), ReplyWithin,
+				cannot: static b => !b.IsOnline || !b.Web.Ready ? $"{b.Name}: not logged in" : null).ConfigureAwait(false);
+		}
+
 		if (Pick(mgr, who == null ? [] : [who], out string? problem) is not { } bots) {
 			return problem!;
 		}
@@ -179,6 +206,46 @@ public static partial class Commands {
 	/// attempt is written down as pending before it is sent. A failure stops the run rather than trying the next game.
 	/// </summary>
 	public static Task<string> GamesBuyAsync(Bot bot, CancellationToken ct) => GameBuyer.BuyNowAsync(bot, ct);
+
+	/// <summary>
+	/// 'games probe &lt;account&gt; &lt;app&gt;': the real checkout, call for call, up to its final price - then the transaction is
+	/// cancelled. Nothing is bought; it exists to prove the form, country, wallet method and price on a live account.
+	/// </summary>
+	internal static async Task<string> GamesProbeAsync(Bot bot, uint app, CancellationToken ct) {
+		if (await new SteamCardMarket(bot).WalletAsync(ct).ConfigureAwait(false) is not { } wallet) {
+			return $"{bot.Name}: Steam didn't say what's in its wallet - the checkout can't be checked.";
+		}
+
+		if (wallet.Currency <= 0) {
+			return $"{bot.Name}: it has no Steam wallet to check the checkout with.";
+		}
+
+		IGameStore store = GameBuyer.StoreFor(bot);
+
+		if (await store.GameAsync(app, wallet.Currency, ct).ConfigureAwait(false) is not { } game) {
+			return $"{bot.Name}: the store didn't answer about app {app}.";
+		}
+
+		if (game.PriceCents <= 0) {
+			return $"{bot.Name}: {game.Name} has no price in {MarketQuotes.Code(wallet.Currency)} - free, region-blocked or only sold in a bundle.";
+		}
+
+		CheckoutProbe probe = await new GameCheckout(new BotCheckoutWeb(bot), BuyPlan.Cents(bot.Cfg.BuyGamesMaxPrice))
+			.ProbeAsync(game, ct).ConfigureAwait(false);
+
+		List<string> lines = [
+			$"{bot.Name}: checkout probe for {game.Name} ({game.App}) - nothing is bought.",
+			$"  store price: {BuyPlan.Money(game.PriceCents, wallet.Currency)}"
+		];
+
+		foreach (CheckoutStep step in probe.Steps) {
+			lines.Add($"  {step.Name}: {step.Detail}");
+		}
+
+		lines.Add($"  {probe.Answer.Reason.Replace("dry run: ", "", StringComparison.Ordinal)}");
+
+		return string.Join(Environment.NewLine, lines);
+	}
 
 	/// <summary>'games preview': each account's look, said plainly. Nothing is bought or reserved.</summary>
 	private static Task<string> GamesLookAsync(IReadOnlyList<Bot> bots) {

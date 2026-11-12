@@ -19,7 +19,7 @@ public static class GameAdvisor {
 	/// <param name="WorstValueCents">1.9.x: in levels mode, the worst the drops can be worth - the cheapest card every time,
 	/// the same floor the booster option uses. 0 when no card is priced.</param>
 	public sealed record GameCandidate(uint App, string Name, long PriceCents, int Currency, long DropValueCents, long BoosterValueCents, int Points, string? Skip,
-		long WorstValueCents = 0, long PointsValueCents = 0, IReadOnlyList<uint>? BundleApps = null);
+		long WorstValueCents = 0, long PointsValueCents = 0, IReadOnlyList<uint>? BundleApps = null, long CardCostCents = 0);
 
 	/// <summary>What buying games would do now, within its settings - and, when nothing, why.</summary>
 	public sealed record Plan(int Currency, long Wallet, long Room, long DayLimit, long WeekLimit, long DaySpent, long WeekSpent, long Keep,
@@ -74,6 +74,24 @@ public static class GameAdvisor {
 
 		return (int) Math.Clamp(Math.Floor(usd), 0, int.MaxValue);
 	}
+
+	/// <summary>Every Points Shop badge level costs this many points, whatever badge it is.</summary>
+	public const int PointsPerLevel = 1000;
+
+	/// <summary>
+	/// The XP one Points Shop badge level gives: the same 100 XP as one crafted badge. A Steam profile level costs 100
+	/// XP only at low levels (200 for the next ten, then 300, and so on), so this is badge progress, not a profile level.
+	/// </summary>
+	public const int XpPerLevel = PointsShop.XpPerLevel;
+
+	/// <summary>
+	/// What <paramref name="points"/> are worth in badge levels: every 1,000 points buy one level (100 XP, the same as
+	/// one crafted badge), valued at <paramref name="levelCents"/> - what the cheapest next badge level costs. 1,000
+	/// points are one Steam profile level only while a level costs 100 XP (the first ten); above that they are a fraction
+	/// of one. 0 when that cost isn't known, so an unpriced level never makes a game look cheaper than it is.
+	/// </summary>
+	public static long PointsWorth(int points, long levelCents) =>
+		levelCents > 0 ? (long) Math.Round(points * (decimal) levelCents / PointsPerLevel, MidpointRounding.ToZero) : 0;
 
 	/// <summary>
 	/// The plan, without touching Steam itself: <paramref name="owned"/> says whether the account already has a game,
@@ -231,37 +249,44 @@ public static class GameAdvisor {
 			(long drop, long worst, long booster) = Value(cfg, app, set, currency, nowUtc);
 			int points = Points(game.PriceCents, WalletRate.ForDeciding(currency));
 
-			// Points earned count toward badge levels when the account spends them there: one level is 1,000 points
-			// (PointsShop), valued at what the cheapest next badge level costs. Display and levels mode only - never
-			// money off the price, and never a reason to buy a game on its own.
-			long pointsValue = cfg.SpendPoints && (levelCents > 0)
-				? (long) Math.Round(points * (decimal) levelCents / 1000m, MidpointRounding.ToZero)
-				: 0;
+			// Points earned count toward badge levels when the account spends them there: all Points Shop levels cost
+			// 1,000 points, and each gives 100 XP (one crafted badge), so a point is worth a thousandth of what the
+			// cheapest next badge level costs. A Steam profile level costs 100 XP only at low levels, so this is badge
+			// progress, not a profile level. Display and levels mode only - never money off the price, and never a reason
+			// to buy a game on its own.
+			long pointsValue = cfg.SpendPoints ? PointsWorth(points, levelCents) : 0;
 
-			// "Levels": only a game that is cheaper than the cards it drops. Average drops or the worst pull (the cheapest
-			// card every time, as the booster floor counts it), plus the badge levels the points it earns would buy. An
-			// unpriced set can't prove it pays, so it waits.
+			// "Levels": a game that pays for itself in drops (average or the worst pull) and the badge levels its points
+			// buy - or one that costs less than buying the cards it drops: half its set, counted at the average card
+			// (average drops) or the cheapest card three times (the worst pull, as the booster floor counts it).
+			// An unpriced set can't prove either, so it waits.
+			long cardCost = CardCost(set, currency, cfg.BuyGamesDropBasis == 1);
 			if (cfg.BuyGamesPriority == 1) {
 				long pays = (cfg.BuyGamesDropBasis == 1 ? worst : drop) + pointsValue;
+				bool cardsCheaper = (cardCost > 0) && (game.PriceCents < cardCost + pointsValue);
 
-				if (pays <= 0) {
+				if ((pays <= 0) && !cardsCheaper) {
 					skipped.Add(new GameCandidate(app, name, game.PriceCents, currency, drop, booster, points,
 						"its cards aren't priced here, so it can't tell whether the drops would pay for it"));
 
 					continue;
 				}
 
-				if (game.PriceCents >= pays) {
+				if ((game.PriceCents >= pays) && !cardsCheaper) {
 					skipped.Add(new GameCandidate(app, name, game.PriceCents, currency, drop, booster, points,
 						$"it costs {BuyPlan.Money(game.PriceCents, currency)}, and its cards are worth about {BuyPlan.Money(pays, currency)} back "
 						+ (cfg.BuyGamesDropBasis == 1 ? "at worst" : "on average")
-						+ (pointsValue > 0 ? ", with the points it earns" : ""), worst, pointsValue));
+						+ (pointsValue > 0 ? ", with the points it earns" : "")
+						+ (cardCost > 0
+							? $"; buying half its cards would cost {BuyPlan.Money(cardCost, currency)}"
+								+ (pointsValue > 0 ? $", and the points it earns are worth {BuyPlan.Money(pointsValue, currency)}" : "")
+							: ""), worst, pointsValue));
 
 					continue;
 				}
 			}
 
-			priced.Add(new GameCandidate(app, name, game.PriceCents, currency, drop, booster, points, null, worst, pointsValue));
+			priced.Add(new GameCandidate(app, name, game.PriceCents, currency, drop, booster, points, null, worst, pointsValue, CardCostCents: cardCost));
 		}
 
 		// Bundles: Steam only names them on a game's own store page, so the cheapest few games priced are asked for the
@@ -310,7 +335,7 @@ public static class GameAdvisor {
 					continue;
 				}
 
-				long drop = 0, worst = 0, booster = 0;
+				long drop = 0, worst = 0, booster = 0, cardCost = 0;
 				bool anySet = false;
 
 				foreach (uint included in pack.BundleApps) {
@@ -323,6 +348,7 @@ public static class GameAdvisor {
 					drop += d;
 					worst += w;
 					booster += b;
+					cardCost += CardCost(includedSet, currency, cfg.BuyGamesDropBasis == 1);
 				}
 
 				if ((cfg.BuyGamesPriority == 0) && cfg.BuyGamesOnlyCardDrops && !anySet) {
@@ -333,39 +359,46 @@ public static class GameAdvisor {
 				}
 
 				int bundlePoints = Points(pack.PriceCents, WalletRate.ForDeciding(currency));
-				long bundlePointsValue = cfg.SpendPoints && (levelCents > 0)
-					? (long) Math.Round(bundlePoints * (decimal) levelCents / 1000m, MidpointRounding.ToZero)
-					: 0;
+				long bundlePointsValue = cfg.SpendPoints ? PointsWorth(bundlePoints, levelCents) : 0;
 
 				if (cfg.BuyGamesPriority == 1) {
 					long pays = (cfg.BuyGamesDropBasis == 1 ? worst : drop) + bundlePointsValue;
+					bool cardsCheaper = (cardCost > 0) && (pack.PriceCents < cardCost + bundlePointsValue);
 
-					if (pays <= 0) {
+					if ((pays <= 0) && !cardsCheaper) {
 						skipped.Add(new GameCandidate(id, pack.Name, pack.PriceCents, currency, drop, booster, bundlePoints,
-							"none of its games' cards is priced, so it can't tell whether they would pay for it", worst, bundlePointsValue, pack.BundleApps));
+							"none of its games' cards is priced, so it can't tell whether they would pay for it", worst, bundlePointsValue, pack.BundleApps,
+							CardCostCents: cardCost));
 
 						continue;
 					}
 
-					if (pack.PriceCents >= pays) {
+					if ((pack.PriceCents >= pays) && !cardsCheaper) {
 						skipped.Add(new GameCandidate(id, pack.Name, pack.PriceCents, currency, drop, booster, bundlePoints,
 							$"it costs {BuyPlan.Money(pack.PriceCents, currency)}, and its games' cards are worth about {BuyPlan.Money(pays, currency)} back "
 							+ (cfg.BuyGamesDropBasis == 1 ? "at worst" : "on average")
-							+ (bundlePointsValue > 0 ? ", with the points it earns" : ""), worst, bundlePointsValue, pack.BundleApps));
+							+ (bundlePointsValue > 0 ? ", with the points it earns" : "")
+							+ (cardCost > 0
+								? $"; buying half its games' cards would cost {BuyPlan.Money(cardCost, currency)}"
+									+ (bundlePointsValue > 0 ? $", and the points it earns are worth {BuyPlan.Money(bundlePointsValue, currency)}" : "")
+								: ""), worst, bundlePointsValue, pack.BundleApps,
+							CardCostCents: cardCost));
 
 						continue;
 					}
 				}
 
-				priced.Add(new GameCandidate(id, pack.Name, pack.PriceCents, currency, drop, booster, bundlePoints, null, worst, bundlePointsValue, pack.BundleApps));
+				priced.Add(new GameCandidate(id, pack.Name, pack.PriceCents, currency, drop, booster, bundlePoints, null, worst, bundlePointsValue, pack.BundleApps,
+					CardCostCents: cardCost));
 			}
 		}
 
 		// "More games" buys the cheapest first, so the money buys the most games. "Levels" buys the best value first - the
-		// game that costs least against what its drops and the badge levels its points buy are worth. Then the caps decide.
+		// game that costs least against what its drops and the badge levels its points buy are worth; a game whose drops
+		// aren't priced falls back to its half-set card cost. Then the caps decide.
 		long left = room;
 		IOrderedEnumerable<GameCandidate> ranked = cfg.BuyGamesPriority == 1
-			? priced.OrderBy(c => c.PriceCents - (cfg.BuyGamesDropBasis == 1 ? c.WorstValueCents : c.DropValueCents) - c.PointsValueCents)
+			? priced.OrderBy(c => c.PriceCents - Payback(cfg, c)).ThenBy(static c => c.PriceCents - c.CardCostCents)
 			: priced.OrderBy(static c => c.PriceCents);
 
 		foreach (GameCandidate c in ranked.ThenBy(static c => c.PriceCents).ThenBy(static c => c.App)) {
@@ -401,8 +434,60 @@ public static class GameAdvisor {
 	/// time, the same way the booster option counts its worst pull - so "levels" mode can ask for a game cheaper than even
 	/// that. A booster pack it could craft is one craft a day - not a free pack - so its figure is the profit: the sealed
 	/// pack's net after Steam's fee, less what the gems it takes would fetch as a sack. 0 when that is a loss, or when
-	/// nothing is priced. All estimates, used only to rank and gate.
+	/// nothing is priced. All estimates, used only to rank and gate. A card with no fresh sale and no shortlist row is
+	/// priced from the set finder's own card prices (a day or two old) at the learned rate, so a known set still has one.
 	/// </summary>
+	/// <summary>
+	/// What a game gives back: its priced drops and the points it earns, or - when no card of its set is priced - what
+	/// buying the cards it drops would cost, so such a game is still ordered by something real.
+	/// </summary>
+	private static long Payback(BotConfig cfg, GameCandidate c) {
+		long pays = (cfg.BuyGamesDropBasis == 1 ? c.WorstValueCents : c.DropValueCents) + c.PointsValueCents;
+
+		return pays > 0 ? pays : c.CardCostCents;
+	}
+
+	/// <summary>
+	/// What buying the cards the game drops would cost on the market, in the wallet's money - half its set (at least one
+	/// card), the half a game's drops cover. <paramref name="worst"/>: the cheapest card three times, as the booster floor
+	/// counts a pull; otherwise the average of the drops counted exactly as a booster's average pull is (<see cref="BoosterMath.AverageFor"/>):
+	/// the average card times the drops, plus the 1% chance one of them is a foil instead. 0 when the set or its prices
+	/// aren't known.
+	/// </summary>
+	public static long CardCost(SetFinder.KnownSet? set, int currency, bool worst) {
+		if ((set is null) || (set.Cards.Count == 0) || set.Usd.Values.Any(static usd => usd <= 0)) {
+			return 0;
+		}
+
+		if (WalletRate.ForDeciding(currency) is not double rate) {
+			return 0;
+		}
+
+		int drops = Math.Max(1, set.Cards.Count / 2);
+
+		if (worst) {
+			return 3L * WalletRate.ToWallet(set.Usd.Values.Min(), rate);
+		}
+
+		long[] normal = [.. set.Cards.Select(card => (long) WalletRate.ToWallet(set.Usd[card], rate))];
+		SparePrices.Game? shortlist = SparePrices.Cached(set.App);
+		bool shortlistFresh = (shortlist != null) && (DateTime.UtcNow - shortlist.When <= ShortlistFresh);
+
+		long? FoilBuyer(string card) {
+			string hash = SetSale.FoilHash(card);
+
+			if (MarketQuotes.Of(hash, currency)?.Lowest is int held and > 0) {
+				return held;
+			}
+
+			return shortlistFresh && (SparePrices.UsdCents(hash) is int usd and > 0) ? WalletRate.ToWallet(usd, rate) : null;
+		}
+
+		long[] foil = [.. set.Cards.Select(FoilBuyer).Where(static buyer => buyer is > 0).Select(static buyer => (long) buyer!.Value)];
+
+		return BoosterMath.AverageFor(drops, normal, foil);
+	}
+
 	public static (long Drop, long Worst, long Booster) Value(BotConfig cfg, uint app, SetFinder.KnownSet? set, int currency, DateTime nowUtc) {
 		if ((set == null) || (set.Cards.Count == 0)) {
 			return (0, 0, 0);
@@ -412,26 +497,42 @@ public static class GameAdvisor {
 		SparePrices.Game? shortlist = SparePrices.Cached(app);
 		bool shortlistFresh = (shortlist != null) && (nowUtc - shortlist.When <= ShortlistFresh);
 		double? rate = WalletRate.ForDeciding(currency);
-		long total = 0, cheapest = 0;
-		int priced = 0;
+		long cheapest = 0;
+		List<long> normal = [], foil = [];
 
-		foreach (string hash in set.Cards) {
-			int net = 0;
-
+		int Net(string hash) {
 			if ((MarketQuotes.Of(hash, currency) is { Lowest: int buyer and > 0, Sales: >= MinSales } quote) && (nowUtc - quote.When <= CardFresh)) {
-				net = Seller.ReceiveFor(buyer);
-			} else if (shortlistFresh && (SparePrices.UsdCents(hash) is int usd and > 0) && (rate is double r)) {
-				net = Seller.ReceiveFor(WalletRate.ToWallet(usd, r));
+				return Seller.ReceiveFor(buyer);
 			}
 
+			if (shortlistFresh && (SparePrices.UsdCents(hash) is int listed and > 0) && (rate is double r)) {
+				return Seller.ReceiveFor(WalletRate.ToWallet(listed, r));
+			}
+
+			// The set finder's own card prices are the last fallback: already read from the market a day or two ago, and
+			// the learned rate turns them into the wallet's money - so every known set has a figure without a request.
+			return (set.Usd.GetValueOrDefault(hash) is int usd and > 0) && (rate is double known)
+				? Seller.ReceiveFor(WalletRate.ToWallet(usd, known))
+				: 0;
+		}
+
+		foreach (string hash in set.Cards) {
+			int net = Net(hash);
+
 			if (net > 0) {
-				total += net;
-				priced++;
+				normal.Add(net);
 				cheapest = cheapest == 0 ? net : Math.Min(cheapest, net);
+			}
+
+			// A card drop is a foil as often as a booster's card is: one in a hundred, counted on the same average.
+			int shiny = Net(SetSale.FoilHash(hash));
+
+			if (shiny > 0) {
+				foil.Add(shiny);
 			}
 		}
 
-		long drop = priced > 0 ? (long) Math.Round(total * (double) drops / priced, MidpointRounding.AwayFromZero) : 0;
+		long drop = BoosterMath.AverageFor(drops, normal, foil);
 		long worst = cheapest > 0 ? cheapest * drops : 0;
 		long booster = 0;
 
