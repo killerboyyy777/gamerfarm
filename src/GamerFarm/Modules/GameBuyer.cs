@@ -151,18 +151,19 @@ public sealed class GameBuyer(Bot bot) : BotModule(bot) {
 				plan.Wallet - keep - paid);
 
 			if (candidate.PriceCents > left) {
-				lines.Add($"{name}: {candidate.Name} (app {candidate.App}) waits - {M(Math.Max(0, left))} is what may be spent now");
+				lines.Add($"{name}: {candidate.Name} ({What(candidate)}) waits - {M(Math.Max(0, left))} is what may be spent now");
 
 				break;
 			}
 
-			StoreGame game = new(candidate.App, candidate.Name, candidate.PriceCents, candidate.Currency, false, false, false, false);
+			StoreGame game = new(candidate.App, candidate.Name, candidate.PriceCents, candidate.Currency, false, false, false, false,
+				BundleApps: candidate.BundleApps, PackageId: candidate.PackageId);
 
 			// Steam's appdetails can't say whether a title counts toward the profile; its store page can. A title with
 			// "Profile features limited" is passed over - buying it wouldn't raise the count it was bought for.
 			try {
 				if (!await store.CountsForProfileAsync(game, ct).ConfigureAwait(false)) {
-					lines.Add($"{name}: {candidate.Name} (app {candidate.App}) doesn't count toward the profile's game count - not bought");
+					lines.Add($"{name}: {candidate.Name} ({What(candidate)}) doesn't count toward the profile's game count - not bought");
 
 					continue;
 				}
@@ -191,13 +192,13 @@ public sealed class GameBuyer(Bot bot) : BotModule(bot) {
 				answer = await store.BuyAsync(game, ct).ConfigureAwait(false);
 			} catch (OperationCanceledException) when (ct.IsCancellationRequested) {
 				// Cut off mid-request: it may have reached Steam, so the entry stays pending and keeps counting as spent.
-				lines.Add($"{name}: stopped while buying {candidate.Name} (app {candidate.App}) - it's counted as spent until a later look finds out");
+				lines.Add($"{name}: stopped while buying {candidate.Name} ({What(candidate)}) - it's counted as spent until a later look finds out");
 
 				break;
 			} catch (Exception e) {
 				// The request may have reached Steam: the entry stays pending and keeps counting as spent.
 				Log.Info(new Said("{0}: buying {1} (app {2}) failed: {3}", name, candidate.Name, candidate.App, Log.Describe(e)), name);
-				lines.Add($"{name}: buying {candidate.Name} (app {candidate.App}) failed - {Log.Describe(e)}; it's counted as spent until a later look finds out");
+				lines.Add($"{name}: buying {candidate.Name} ({What(candidate)}) failed - {Log.Describe(e)}; it's counted as spent until a later look finds out");
 
 				break;
 			}
@@ -210,7 +211,7 @@ public sealed class GameBuyer(Bot bot) : BotModule(bot) {
 				string boughtName = answer.PackageName is { Length: > 0 } packName ? packName : candidate.Name;
 				int packApps = answer.Apps?.Count ?? 1;
 				string packSaid = packApps > 1 ? $" - a pack of {packApps} apps" : "";
-				lines.Add($"{name}: bought {boughtName} (app {candidate.App}) for {M(cost)} - paid from the wallet balance{packSaid}");
+				lines.Add($"{name}: bought {boughtName} ({What(candidate)}) for {M(cost)} - paid from the wallet balance{packSaid}");
 				Log.Info(new Said("{0}: bought {1} (app {2}) for {3}{4}", name, boughtName, candidate.App, M(cost), packSaid), name);
 
 				// The free DLC that comes with what was just bought, when the account takes all free DLC. Never a reason
@@ -239,7 +240,7 @@ public sealed class GameBuyer(Bot bot) : BotModule(bot) {
 					ledger.Replace(pending, null);
 				}
 
-				lines.Add($"{name}: didn't buy {candidate.Name} (app {candidate.App}) - {answer.Reason}");
+				lines.Add($"{name}: didn't buy {candidate.Name} ({What(candidate)}) - {answer.Reason}");
 				Log.Info(new Said("{0}: didn't buy {1} (app {2}) - {3}", name, candidate.Name, candidate.App, answer.Reason), name);
 
 				break;   // one failure a look: nothing else is tried on a guess
@@ -261,6 +262,11 @@ public sealed class GameBuyer(Bot bot) : BotModule(bot) {
 
 		return string.Join(Environment.NewLine, lines);
 	}
+
+	/// <summary>What to call the thing being bought: its package, its bundle, or the app.</summary>
+	private static string What(GameAdvisor.GameCandidate candidate) => candidate.PackageId is { } package ? $"package {package}"
+		: candidate.BundleApps is { Count: > 0 } ? $"bundle {candidate.App}"
+		: $"app {candidate.App}";
 
 	protected override async Task RunAsync(CancellationToken ct) {
 		if (!await Sleep(Rng.Minutes(10, 25), ct).ConfigureAwait(false)) {

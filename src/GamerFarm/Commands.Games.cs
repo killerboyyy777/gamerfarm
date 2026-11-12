@@ -259,6 +259,11 @@ public static partial class Commands {
 			cannot: static b => !b.IsOnline || !b.Web.Ready ? $"{b.Name}: not logged in" : null);
 	}
 
+	/// <summary>What to call a candidate: its package, its bundle, or the app.</summary>
+	private static string What(GameAdvisor.GameCandidate c) => c.PackageId is { } package ? $"package {package}"
+		: c.BundleApps is { Count: > 0 } ? $"bundle {c.App}"
+		: $"app {c.App}";
+
 	/// <summary>One account's game look in plain words: what it would buy, for how much and what comes back, and why not when nothing.</summary>
 	public static string GamesSaid(Bot b, GameAdvisor.Plan plan) {
 		string name = b.Name;
@@ -291,15 +296,17 @@ public static partial class Commands {
 					: $"its cards aren't priced here, so what they pay back isn't counted (they drop after about {hours}h of play)";
 				string booster = c.BoosterValueCents > 0 ? $" and about {M(c.BoosterValueCents)} a day from booster packs" : "";
 
-				lines.Add($"{name}: would buy {c.Name} ({c.App}) for {M(c.PriceCents)} - {drop}{booster}; about {c.Points} points"
-					+ (c.BundleApps is { Count: > 1 } games ? $"; a bundle of {games.Count} games" : ""));
+				lines.Add($"{name}: would buy {c.Name} ({What(c)}) for {M(c.PriceCents)} - {drop}{booster}; about {c.Points} points"
+					+ (c.PackageId is not null
+						? $"; a package of {c.BundleApps?.Count ?? 1} apps"
+						: c.BundleApps is { Count: > 1 } games ? $"; a bundle of {games.Count} games" : ""));
 			}
 
 			lines.Add($"{name}: {plan.Candidates.Count} game(s) would be bought for {M(plan.Candidates.Sum(static c => c.PriceCents))}.");
 		}
 
 		foreach (GameAdvisor.GameCandidate c in plan.Skipped) {
-			lines.Add($"{name}: skipped {c.Name} (app {c.App}) - {c.Skip ?? "over the limits"}");
+			lines.Add($"{name}: skipped {c.Name} ({What(c)}) - {c.Skip ?? "over the limits"}");
 		}
 
 		if (!b.Cfg.BuyGames) {

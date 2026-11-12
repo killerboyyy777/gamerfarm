@@ -35,6 +35,7 @@ All under the account's **Buying cards** section.
 | The cards are counted at | average drops | In levels mode: average drops, or the worst pull (the cheapest card every time) |
 | Only buy games with card drops | on | In "more games" mode, skip games with no known trading-card set |
 | Look for bundles too | on | Also weigh the bundles Steam lists on a game's page - one cart item of several games |
+| Look for packages too | on | Also weigh the packages (Steam's "subs") a game is sold through - a pack of several games and their soundtracks, one cart item |
 | Also consider these games | empty | Extra app ids besides the games with a known card set |
 | Spend at most a day on games | 5.00 | Rolling 24-hour limit, in the wallet's currency; below 0 = no limit |
 | Spend at most a week on games | 20.00 | Rolling 7-day limit; below 0 = no limit |
@@ -50,7 +51,8 @@ Only a **paid, standalone game** is considered:
 
 - Free-to-play games are skipped: they don't add to the profile's game count or badge.
 - DLC, demos, software and videos are skipped: they are not games of their own and don't add to the game count.
-- Bundles are not games either, but they are weighed as a package of the games inside them (see below).
+- Bundles and multi-game packages are not games either, but they are weighed as a pack of the games inside them (see
+  below).
 - Age-gated games are skipped: the store asks for an age check.
 - Games not sold in the account's region are skipped: the store returns no price or package for them. Steam prices
   regionally, so a game is either in the wallet's currency or not available at all; a price in another currency is only
@@ -66,19 +68,30 @@ Steam lists for it claimed straight away - a free soundtrack, supporter pack or 
 same mode accepts permanently free DLC seen in Steam's free-games feed, which the other modes leave alone because they
 only take temporary giveaways. It never claims a paid DLC, and a failure there never affects the purchase.
 
-## Bundles
+## Bundles and packages
+
+Steam sells things two ways that hold several games, and both count as one cart item:
+
+- a **bundle** (`bundleid`), named on the store page of a game inside it;
+- a **package** or "sub" (`packageid`), which is what a buy button adds - a game's own package holds one app, but a
+  multi-game pack holds several.
 
 Steam only names a bundle on the store page of a game inside it, so the advisor asks the store page of the cheapest few
-games it priced for the bundles they sit in. A bundle is then weighed like one purchase:
+games it priced for the bundles they sit in. It also asks the cheapest few games for the packages they are sold through
+(`packagedetails`), and keeps any package holding more than one app. A pack is then weighed like one purchase:
 
 - Everything its games drop, craft and earn counts together: the card drops, the booster profit, and the Steam Points
-  from the bundle's own price.
-- The games inside it must not already be owned, and the bundle's games are not also bought on their own in the same
-  look - whichever ranks first is bought, the other waits.
-- It goes into the cart as a bundle (`bundleid`), one item, not as one of its games' packages.
-- "Most to pay for one game" does not apply to a bundle, because its price covers several games; the day's and the
-  week's limits, the wallet balance and the kept amount still do.
-- "Only buy games with card drops" applies to a bundle when none of its games has a known card set.
+  from the pack's own price.
+- The apps inside it must not already be owned - a soundtrack is fine, it just earns nothing - and its games are not
+  also bought on their own in the same look: whichever ranks first is bought, the other waits.
+- Everything a bought pack granted is recorded in the spending list and treated as owned from then on, so the same pack
+  is never recommended again; the library can lag behind, and a soundtrack never appears in it at all.
+- A bundle goes into the cart as a bundle (`bundleid`); a package goes in as its package id, which is the same call a
+  single game's purchase makes.
+- "Most to pay for one game" does not apply to a bundle or a package, because its price covers several apps; the day's
+  and the week's limits, the wallet balance and the kept amount still do.
+- "Only buy games with card drops" applies when none of its apps has a known card set.
+- At the same price a pack is bought before a single game, because it holds more.
 
 ## How the value is estimated
 
@@ -104,7 +117,8 @@ proven to pay.
 
 The checkout is wallet-only, using Steam's own flow:
 
-1. Add the game's package, or the bundle itself, to the account cart and set the account's store country.
+1. Add the game's package, the bundle itself, or a pack's package id to the account cart and set the account's store
+   country.
 2. Start the transaction with `PaymentMethod=steamaccount` (Steam's name for the wallet balance).
 3. Read the final price and check it: same currency, no external payment URL, no review, within the per-game cap and
    the wallet balance less what is kept.

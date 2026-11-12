@@ -16,8 +16,13 @@ namespace NocatFarm.Core;
 /// paid game - Steam prices regionally, so this is "not available here", not "priced in another currency".</param>
 /// <param name="BundleApps">When it's a bundle rather than a game: every game it includes (Steam's own list). Empty or
 /// null for a game.</param>
+/// <param name="PackageId">When it's a Steam package sold as a pack rather than one app: the package to put in the cart.
+/// Null for a game, which the checkout looks up a package for.</param>
 public sealed record StoreGame(uint App, string Name, long PriceCents, int Currency, bool Free, bool AgeGated, bool BundleOnly, bool Owned,
-	bool CountsForProfile = true, bool RegionBlocked = false, IReadOnlyList<uint>? BundleApps = null);
+	bool CountsForProfile = true, bool RegionBlocked = false, IReadOnlyList<uint>? BundleApps = null, uint? PackageId = null);
+
+/// <summary>One Steam package sold on its own: the pack's name, its price, and every app it grants.</summary>
+public sealed record StorePackage(uint Id, string Name, long PriceCents, int Currency, IReadOnlyList<uint> Apps);
 
 /// <summary>How one game purchase went. Anything but <see cref="Done"/> spent nothing, or says in its reason that it may have.</summary>
 public enum GameBuyResult {
@@ -87,6 +92,14 @@ public interface IGameStore {
 	/// a bundle of games.
 	/// </summary>
 	Task<StoreGame?> BundleAsync(uint bundleId, int currency, CancellationToken ct) => Task.FromResult<StoreGame?>(null);
+
+	/// <summary>
+	/// The multi-app packages Steam sells the app through, in the wallet's money - a pack of several games is one cart
+	/// item, and Steam only names it as a purchase option on the app's own store data. Empty when none, or when the
+	/// store didn't answer.
+	/// </summary>
+	Task<IReadOnlyList<StorePackage>> PackagesForAsync(uint app, int currency, CancellationToken ct) =>
+		Task.FromResult<IReadOnlyList<StorePackage>>([]);
 }
 
 /// <summary>
@@ -107,9 +120,11 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 		return (status != 200) || string.IsNullOrWhiteSpace(body) ? null : Parse(body, app, bot.Library.Find(app) is not null);
 	}
 
-	/// <summary>Buy the game with the wallet balance only - see <see cref="GameCheckout"/>.</summary>
+	/// <summary>Buy the game with the wallet balance only - see <see cref="GameCheckout"/>. A bundle or a package is one
+	/// cart item whose price covers every game in it, so the per-game cap doesn't apply to it.</summary>
 	public Task<GamePurchase> BuyAsync(StoreGame game, CancellationToken ct) =>
-		new GameCheckout(new BotCheckoutWeb(bot), NocatFarm.Modules.BuyPlan.Cents(bot.Cfg.BuyGamesMaxPrice)).BuyAsync(game, ct);
+		new GameCheckout(new BotCheckoutWeb(bot),
+			(game.BundleApps is { Count: > 0 }) || game.PackageId is not null ? 0 : NocatFarm.Modules.BuyPlan.Cents(bot.Cfg.BuyGamesMaxPrice)).BuyAsync(game, ct);
 
 	/// <summary>Store page reads for the profile-count notice, kept a week per app - it changes with the app, not a look.</summary>
 	private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, (bool Counts, DateTime At)> ProfileKept = new();
@@ -272,14 +287,94 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 		}
 	}
 
+	/// <summary>Packages read for an app, and what each of them holds, kept a week - the store changes these rarely.</summary>
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, (IReadOnlyList<StorePackage> Packs, DateTime At)> PacksKept = new();
+
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, (PackageInfo Info, DateTime At)> PackageContentsKept = new();
+
 	/// <summary>
-	/// The package that sells an app on its own, from a full appdetails answer (the filtered ones leave package_groups
-	/// out). The one whose price is the price the plan saw is preferred; one package on its own is that game's, several at
-	/// another price are never guessed at. Null when the store names no package that can be added to a cart.
+	/// The multi-app packages the app is sold through, read at most once a week per app: its full appdetails names the
+	/// packages (the filtered ones leave them out), and one batched packagedetails read says what each holds. Empty when
+	/// the app is sold on its own, or when the store didn't answer.
 	/// </summary>
-	public static uint? ReadPackage(string? json, uint app, long priceCents) {
+	public async Task<IReadOnlyList<StorePackage>> PackagesForAsync(uint app, int currency, CancellationToken ct) {
+		if (PacksKept.TryGetValue(app, out (IReadOnlyList<StorePackage> Packs, DateTime At) kept) && (DateTime.UtcNow - kept.At < TimeSpan.FromDays(7))) {
+			return kept.Packs;
+		}
+
+		string country = bot.Country.Length == 2 ? bot.Country : "";
+		string url = $"https://store.steampowered.com/api/appdetails?appids={app.ToString(CultureInfo.InvariantCulture)}&l=english"
+			+ (country.Length > 0 ? "&cc=" + country : "");
+		(int status, string? body) = await GameCatalog.StoreGetAsync(url, Gap, ct).ConfigureAwait(false);
+
+		if ((status != 200) || string.IsNullOrWhiteSpace(body)) {
+			return [];
+		}
+
+		List<(uint Id, long PriceCents)> offers = [.. PackageOffers(body, app).Where(static s => s.PriceCents > 0).Take(4)];
+
+		if (offers.Count == 0) {
+			PacksKept[app] = ([], DateTime.UtcNow);
+
+			return [];
+		}
+
+		IReadOnlyDictionary<uint, PackageInfo> contents = await PackageContentsAsync([.. offers.Select(static s => s.Id)], ct).ConfigureAwait(false);
+		List<StorePackage> packs = [];
+
+		foreach ((uint id, long price) in offers) {
+			// One app is the game's own package, not a pack: the checkout buys those as it always has.
+			if (contents.TryGetValue(id, out PackageInfo? info) && (info.Apps.Count > 1)) {
+				packs.Add(new StorePackage(id, info.Name, price, currency, info.Apps));
+			}
+		}
+
+		PacksKept[app] = (packs, DateTime.UtcNow);
+
+		return packs;
+	}
+
+	/// <summary>What each package holds, from packagedetails - one batched read for the ones not kept yet.</summary>
+	private async Task<IReadOnlyDictionary<uint, PackageInfo>> PackageContentsAsync(IReadOnlyList<uint> ids, CancellationToken ct) {
+		Dictionary<uint, PackageInfo> found = [];
+		List<uint> missing = [];
+
+		foreach (uint id in ids.Distinct()) {
+			if (PackageContentsKept.TryGetValue(id, out (PackageInfo Info, DateTime At) kept) && (DateTime.UtcNow - kept.At < TimeSpan.FromDays(7))) {
+				found[id] = kept.Info;
+			} else {
+				missing.Add(id);
+			}
+		}
+
+		if (missing.Count == 0) {
+			return found;
+		}
+
+		string country = bot.Country.Length == 2 ? "&cc=" + bot.Country : "";
+		string list = string.Join(",", missing.Select(static id => id.ToString(CultureInfo.InvariantCulture)));
+		string url = $"https://store.steampowered.com/api/packagedetails?packageids={list}&l=english{country}";
+		(int status, string? body) = await GameCatalog.StoreGetAsync(url, Gap, ct).ConfigureAwait(false);
+
+		if (status != 200) {
+			return found;
+		}
+
+		foreach ((uint id, PackageInfo info) in PackageContents(body)) {
+			PackageContentsKept[id] = (info, DateTime.UtcNow);
+			found[id] = info;
+		}
+
+		return found;
+	}
+
+	/// <summary>
+	/// The packages an app is sold through, from a full appdetails answer: each one's id and the price it shows there.
+	/// Free licences are left out. Empty when the answer isn't about that app or names none.
+	/// </summary>
+	public static IReadOnlyList<(uint Id, long PriceCents)> PackageOffers(string? json, uint app) {
 		if (string.IsNullOrWhiteSpace(json)) {
-			return null;
+			return [];
 		}
 
 		try {
@@ -289,10 +384,10 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 				|| !node.TryGetProperty("success", out JsonElement ok) || (ok.ValueKind != JsonValueKind.True)
 				|| !node.TryGetProperty("data", out JsonElement data) || (data.ValueKind != JsonValueKind.Object)
 				|| !data.TryGetProperty("package_groups", out JsonElement groups) || (groups.ValueKind != JsonValueKind.Array)) {
-				return null;
+				return [];
 			}
 
-			List<(uint Package, long Price)> subs = [];
+			List<(uint Id, long PriceCents)> subs = [];
 
 			foreach (JsonElement group in groups.EnumerateArray()) {
 				if ((group.ValueKind != JsonValueKind.Object) || !group.TryGetProperty("subs", out JsonElement list) || (list.ValueKind != JsonValueKind.Array)) {
@@ -309,22 +404,98 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 					}
 
 					long price = sub.TryGetProperty("price_in_cents_with_discount", out JsonElement p) && p.TryGetInt64(out long cents) ? cents : 0;
-					subs.Add((package, Math.Max(0, price)));
+
+					if (!subs.Any(s => s.Id == package)) {
+						subs.Add((package, Math.Max(0, price)));
+					}
 				}
 			}
 
-			uint exact = subs.FirstOrDefault(s => (priceCents > 0) && (s.Price == priceCents)).Package;
+			return subs;
+		} catch (JsonException) {
+			return [];
+		}
+	}
 
-			if (exact > 0) {
-				return exact;
+	/// <summary>
+	/// Every package a packagedetails answer describes, by id: its name and the apps it grants (a pack has several).
+	/// Packages with no apps are left out.
+	/// </summary>
+	public static IReadOnlyDictionary<uint, PackageInfo> PackageContents(string? json) {
+		Dictionary<uint, PackageInfo> contents = [];
+
+		if (string.IsNullOrWhiteSpace(json)) {
+			return contents;
+		}
+
+		try {
+			using JsonDocument doc = JsonDocument.Parse(json);
+
+			if (!doc.RootElement.TryGetProperty("data", out JsonElement data) || (data.ValueKind != JsonValueKind.Object)) {
+				return contents;
 			}
 
-			// One package and nothing to confuse it with: that's the app's own. Several at another price (an edition,
-			// a DLC, a bundle) are never guessed at - buying the wrong one is worse than not buying.
-			return subs.Count == 1 ? subs[0].Package : null;
+			foreach (JsonProperty property in data.EnumerateObject()) {
+				if (!uint.TryParse(property.Name, NumberStyles.None, CultureInfo.InvariantCulture, out uint id) || (id == 0) || (property.Value.ValueKind != JsonValueKind.Object)) {
+					continue;
+				}
+
+				string name = property.Value.TryGetProperty("name", out JsonElement label) && (label.ValueKind == JsonValueKind.String) ? (label.GetString() ?? "").Trim() : "";
+				List<uint> apps = [];
+
+				if (property.Value.TryGetProperty("apps", out JsonElement list) && (list.ValueKind == JsonValueKind.Array)) {
+					foreach (JsonElement app in list.EnumerateArray()) {
+						uint found = app.ValueKind switch {
+							JsonValueKind.Object when app.TryGetProperty("id", out JsonElement aid) => IdOf(aid),
+							JsonValueKind.Number or JsonValueKind.String => IdOf(app),
+							_ => 0
+						};
+
+						if ((found != 0) && !apps.Contains(found)) {
+							apps.Add(found);
+						}
+					}
+				}
+
+				if (apps.Count > 0) {
+					contents[id] = new PackageInfo(name, apps);
+				}
+			}
 		} catch (JsonException) {
+			// Not the answer we know: no package contents.
+		}
+
+		return contents;
+	}
+
+	/// <summary>An app id as Steam writes it - a number, or a number in text. 0 when it isn't one.</summary>
+	public static uint IdOf(JsonElement value) => value.ValueKind switch {
+		JsonValueKind.Number when value.TryGetUInt32(out uint n) => n,
+		JsonValueKind.String when uint.TryParse(value.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out uint n) => n,
+		_ => 0
+	};
+
+	/// <summary>
+	/// The package that sells an app on its own, from a full appdetails answer (the filtered ones leave package_groups
+	/// out). The one whose price is the price the plan saw is preferred; one package on its own is that game's, several at
+	/// another price are never guessed at. Null when the store names no package that can be added to a cart.
+	/// </summary>
+	public static uint? ReadPackage(string? json, uint app, long priceCents) {
+		IReadOnlyList<(uint Id, long PriceCents)> subs = PackageOffers(json, app);
+
+		if (subs.Count == 0) {
 			return null;
 		}
+
+		uint exact = subs.FirstOrDefault(s => (priceCents > 0) && (s.PriceCents == priceCents)).Id;
+
+		if (exact > 0) {
+			return exact;
+		}
+
+		// One package and nothing to confuse it with: that's the app's own. Several at another price (an edition,
+		// a DLC, a bundle) are never guessed at - buying the wrong one is worse than not buying.
+		return subs.Count == 1 ? subs[0].Id : null;
 	}
 
 	/// <summary>

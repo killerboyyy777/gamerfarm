@@ -975,6 +975,14 @@ public sealed class BotConfig {
 	/// </summary>
 	public bool BuyGamesBundles { get; set; } = true;
 
+	/// <summary>
+	/// Also look at the packages (Steam's "subs") a game is sold through: one package can be several games and their
+	/// soundtracks for less than any of them, and it is one cart item whose card drops, booster crafts and Steam Points
+	/// all add up. On by default. The most it may pay per game doesn't apply to a package - its price covers everything
+	/// in it; the day's and the week's limits still do.
+	/// </summary>
+	public bool BuyGamesPackages { get; set; } = true;
+
 	/// <summary>The most it spends on games in any 24 hours, in the wallet's own currency. Below 0 (-1): no limit - whatever the wallet holds.</summary>
 	public float BuyGamesDailyLimit { get; set; } = 5.00f;
 
