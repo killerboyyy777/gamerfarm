@@ -122,6 +122,10 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 		: html.Contains("Profile Features Limited", StringComparison.OrdinalIgnoreCase)
 			|| html.Contains("Steam is Learning About This Game", StringComparison.OrdinalIgnoreCase);
 
+	/// <summary>A readable page without the notice counts; one with it doesn't; an unreadable page counts (the cheap checks
+	/// already ruled out what can be known without it).</summary>
+	public static bool CountsOnPage(bool? limited) => limited != true;
+
 	/// <summary>
 	/// Whether the game counts toward the profile's game count: a paid, standalone game whose store page doesn't carry
 	/// Steam's profile-features notice. The page is read at most once a week per app; unreadable, the game is counted
@@ -146,7 +150,7 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 		string url = $"https://store.steampowered.com/app/{game.App.ToString(CultureInfo.InvariantCulture)}/{country}&l=english";
 		(int status, string? body) = await GameCatalog.StoreGetAsync(url, Gap, ct).ConfigureAwait(false);
 		bool? limited = status == 200 ? ProfileLimited(body) : null;
-		bool counts = limited != false;
+		bool counts = CountsOnPage(limited);
 
 		if (limited != null) {
 			ProfileKept[game.App] = (counts, DateTime.UtcNow);

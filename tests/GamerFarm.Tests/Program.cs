@@ -27798,6 +27798,9 @@ await CommandSweep.RunAsync(Check);
 			&& NocatFarm.Core.SteamGameStore.ProfileLimited("<div>Profile Features Limited</div>") == true
 			&& NocatFarm.Core.SteamGameStore.ProfileLimited("<div>Steam is Learning About This Game</div>") == true
 			&& NocatFarm.Core.SteamGameStore.ProfileLimited("<html>a normal game</html>") == false
+			&& NocatFarm.Core.SteamGameStore.CountsOnPage(false)
+			&& !NocatFarm.Core.SteamGameStore.CountsOnPage(true)
+			&& NocatFarm.Core.SteamGameStore.CountsOnPage(null)
 			&& NocatFarm.Core.SteamGameStore.Parse("{\"20\":{\"success\":true,\"data\":{\"name\":\"G\",\"type\":\"game\",\"is_free\":false}}}", 20) is { RegionBlocked: true, BundleOnly: false, CountsForProfile: false });
 
 		var bgProfileStore = new FakeGameStore();
