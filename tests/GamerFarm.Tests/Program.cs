@@ -27920,6 +27920,12 @@ await CommandSweep.RunAsync(Check);
 		&& bgProbe.Steps.Any(static s => s.Name == "getfinalprice") && bgProbe.Steps.Any(static s => s.Name == "cancel"),
 		$"{bgProbe.Answer}; finalized {bgProbeWeb.Finalized}, cancelled {bgProbeWeb.Cancelled}, steps {string.Join(",", bgProbe.Steps.Select(static s => s.Name))}");
 
+	var bgPackage = NocatFarm.Core.BotCheckoutWeb.ParsePackage(
+		"{\"data\":{\"96994\":{\"name\":\"NukGames Pack\",\"apps\":[{\"id\":636150},{\"id\":562360},{\"id\":\"539720\"}]}}}", 96994);
+	Check("game checkout: a package's name and every app in it are read, so a pack isn't mistaken for one game",
+		bgPackage is { Name: "NukGames Pack", Apps.Count: 3 } && bgPackage.Apps.Contains(562360u) && bgPackage.Apps.Contains(539720u),
+		$"{bgPackage?.Name}: {string.Join(",", bgPackage?.Apps ?? [])}");
+
 	var bgExternal = new ScriptedCheckoutWeb {
 		PriceBody = "{\"success\":1,\"base\":100,\"currencycode\":20,\"externalurl\":\"https://pay.example.invalid/\"}"
 	};

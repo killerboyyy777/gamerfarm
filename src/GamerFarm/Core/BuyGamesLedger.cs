@@ -20,7 +20,7 @@ public sealed class BuyGamesLedger(string path) {
 	/// <param name="Name">The game's name, as the store gave it.</param>
 	/// <param name="Pending">The outcome isn't known yet: it keeps counting within the day's and the week's windows until they pass.</param>
 	/// <param name="TransId">Steam's transaction id, once it gave one.</param>
-	public sealed record Entry(DateTime At, long Cents, int Currency, uint App, string Name, bool Pending = false, string? TransId = null);
+	public sealed record Entry(DateTime At, long Cents, int Currency, uint App, string Name, bool Pending = false, string? TransId = null, uint[]? Apps = null);
 
 	internal sealed class Stored {
 		public bool Ok { get; set; }

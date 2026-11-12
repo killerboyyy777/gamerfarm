@@ -48,7 +48,8 @@ public enum GameBuyResult {
 /// transaction id once it gave one.
 /// </summary>
 /// <param name="PaidCents">What the wallet fell by, in <paramref name="Currency"/> - 0 when nothing was spent.</param>
-public sealed record GamePurchase(GameBuyResult Result, string Reason = "", long PaidCents = 0, int Currency = 0, string? TransId = null, bool Sent = false) {
+public sealed record GamePurchase(GameBuyResult Result, string Reason = "", long PaidCents = 0, int Currency = 0, string? TransId = null, bool Sent = false,
+	IReadOnlyList<uint>? Apps = null, string? PackageName = null) {
 	/// <summary>
 	/// Whether any money may have gone: once finalizing has been sent it counts as spent, even when the wallet page hasn't
 	/// caught up yet or Steam left the purchase for review.

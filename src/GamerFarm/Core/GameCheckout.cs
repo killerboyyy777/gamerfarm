@@ -87,6 +87,7 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 		// The cart service needs a package, not an app id - unless it's a bundle, which goes in as itself.
 		bool bundle = game.BundleApps is { Count: > 0 };
 		uint package = game.App;
+		PackageInfo? info = null;
 
 		if (!bundle) {
 			if (await web.PackageAsync(game.App, game.PriceCents, ct).ConfigureAwait(false) is not uint found || (found == 0)) {
@@ -94,9 +95,10 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 			}
 
 			package = found;
+			info = await web.PackageInfoAsync(package, ct).ConfigureAwait(false);
 		}
 
-		Step(bundle ? "bundle" : "package", bundle ? $"{game.App} (bundle)" : $"{package}");
+		Step(bundle ? "bundle" : "package", bundle ? $"{game.App} (bundle)" : $"{package}" + (info is { Apps.Count: > 1 } multi ? $" ({multi.Name}, {multi.Apps.Count} apps)" : ""));
 
 		string country = CountryOf(web.Country, wallet.Saved?.Country);
 
@@ -185,7 +187,7 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 					cancelled
 						? $"dry run: the real checkout reached {BuyPlan.Money(price.TotalCents, price.Currency)} on the wallet, then the transaction was cancelled - nothing was bought"
 						: $"dry run: the real checkout reached {BuyPlan.Money(price.TotalCents, price.Currency)}, but the transaction couldn't be cancelled - check it on Steam",
-					0, wallet.Currency, transId);
+					0, wallet.Currency, transId, Apps: info?.Apps, PackageName: info?.Name);
 			}
 
 			// From here the purchase may go through: whatever the answer, it counts as spent until the wallet says otherwise.
@@ -217,7 +219,7 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 
 			if (status.Ok && after is { } then && (then.Currency == before.Currency) && (before.Balance - then.Balance >= price.TotalCents)) {
 				// The finalized total is what this game cost; the rest of the drop may be another purchase.
-				return new(GameBuyResult.Done, "", price.TotalCents, then.Currency, transId);
+				return new(GameBuyResult.Done, "", price.TotalCents, then.Currency, transId, Apps: info?.Apps, PackageName: info?.Name);
 			}
 
 			// Sent but not confirmed: PaidCents stays 0 (nothing proven), and the caller keeps the planned amount counted
@@ -534,6 +536,9 @@ internal sealed class GameCheckout(IGameCheckoutWeb web, long maxCents = 0) {
 /// <summary>One call a checkout probe made, and what came back.</summary>
 public sealed record CheckoutStep(string Name, string Detail);
 
+/// <summary>A Steam package: the name it is sold under, and every app it grants - a multi-game pack has several.</summary>
+public sealed record PackageInfo(string Name, IReadOnlyList<uint> Apps);
+
 /// <summary>A dry run of the checkout: the never-finalized answer, and every call it made.</summary>
 public sealed record CheckoutProbe(GamePurchase Answer, IReadOnlyList<CheckoutStep> Steps);
 
@@ -547,6 +552,9 @@ internal interface IGameCheckoutWeb {
 
 	/// <summary>The package that sells the app at that price, or null when the store names none.</summary>
 	Task<uint?> PackageAsync(uint app, long priceCents, CancellationToken ct);
+
+	/// <summary>The package's name and every app it grants (a multi-game pack has several). Null when unknown.</summary>
+	Task<PackageInfo?> PackageInfoAsync(uint packageId, CancellationToken ct) => Task.FromResult<PackageInfo?>(null);
 
 	Task<string?> GetAsync(Uri url, Uri referer, CancellationToken ct);
 
@@ -580,6 +588,82 @@ internal sealed class BotCheckoutWeb(Bot bot) : IGameCheckoutWeb {
 
 		return status == 200 ? SteamGameStore.ReadPackage(body, app, priceCents) : null;
 	}
+
+	private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, (DateTime At, PackageInfo Info)> PackageInfoKept = new();
+
+	/// <summary>
+	/// The package's name and every app it grants, from packagedetails: a 0.49 pack can be four games. Kept a week per
+	/// package; null when the store didn't answer.
+	/// </summary>
+	public async Task<PackageInfo?> PackageInfoAsync(uint packageId, CancellationToken ct) {
+		if (PackageInfoKept.TryGetValue(packageId, out (DateTime At, PackageInfo Info) kept) && (DateTime.UtcNow - kept.At < TimeSpan.FromDays(7))) {
+			return kept.Info;
+		}
+
+		string country = bot.Country.Length == 2 ? "&cc=" + bot.Country : "";
+		string url = $"https://store.steampowered.com/api/packagedetails?packageids={packageId.ToString(CultureInfo.InvariantCulture)}&l=english{country}";
+		(int status, string? body) = await GameCatalog.StoreGetAsync(url, TimeSpan.FromSeconds(1.5), ct).ConfigureAwait(false);
+
+		if ((status != 200) || (ParsePackage(body, packageId) is not { } info)) {
+			return null;
+		}
+
+		PackageInfoKept[packageId] = (DateTime.UtcNow, info);
+
+		return info;
+	}
+
+	/// <summary>The name a package is sold under and the apps it grants, from a packagedetails answer. Null when unknown.</summary>
+	public static PackageInfo? ParsePackage(string? json, uint packageId) {
+		if (string.IsNullOrWhiteSpace(json)) {
+			return null;
+		}
+
+		try {
+			using JsonDocument doc = JsonDocument.Parse(json);
+
+			if (!doc.RootElement.TryGetProperty("data", out JsonElement data) || (data.ValueKind != JsonValueKind.Object)) {
+				return null;
+			}
+
+			foreach (JsonProperty property in data.EnumerateObject()) {
+				if (!uint.TryParse(property.Name, NumberStyles.None, CultureInfo.InvariantCulture, out uint id) || (id != packageId) || (property.Value.ValueKind != JsonValueKind.Object)) {
+					continue;
+				}
+
+				string name = property.Value.TryGetProperty("name", out JsonElement label) && (label.ValueKind == JsonValueKind.String) ? (label.GetString() ?? "") : "";
+				List<uint> apps = [];
+
+				if (property.Value.TryGetProperty("apps", out JsonElement list) && (list.ValueKind == JsonValueKind.Array)) {
+					foreach (JsonElement app in list.EnumerateArray()) {
+						// Steam writes an app id as a number here, and sometimes as a string ("539720") - both are the same app.
+						uint found = app.ValueKind switch {
+							JsonValueKind.Object when app.TryGetProperty("id", out JsonElement aid) => IdOf(aid),
+							JsonValueKind.Number or JsonValueKind.String => IdOf(app),
+							_ => 0
+						};
+
+						if ((found != 0) && !apps.Contains(found)) {
+							apps.Add(found);
+						}
+					}
+				}
+
+				return apps.Count > 0 ? new PackageInfo(name, apps) : null;
+			}
+		} catch (JsonException) {
+			// Not the answer we know: no package contents.
+		}
+
+		return null;
+	}
+
+	/// <summary>An app id as Steam writes it - a number, or a number in text. 0 when it isn't one.</summary>
+	private static uint IdOf(JsonElement value) => value.ValueKind switch {
+		JsonValueKind.Number when value.TryGetUInt32(out uint n) => n,
+		JsonValueKind.String when uint.TryParse(value.GetString(), NumberStyles.None, CultureInfo.InvariantCulture, out uint n) => n,
+		_ => 0
+	};
 
 	public Task<string?> GetAsync(Uri url, Uri referer, CancellationToken ct) => bot.Web.GetFromAsync(url, referer, ct);
 

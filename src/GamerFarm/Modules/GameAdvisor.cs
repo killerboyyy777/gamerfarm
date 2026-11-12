@@ -56,8 +56,14 @@ public static class GameAdvisor {
 
 		long levelCents = bot.Cfg.SpendPoints ? GemsChoice.CostsOf(bot.Name, wallet.Currency, now)?.FirstOrDefault() ?? 0 : 0;
 
+		// A multi-game package grants apps the library may not list yet (or a soundtrack it never will): treat everything
+		// the ledger says was in a bought package as owned, or the advisor recommends the same pack again.
+		HashSet<uint> packed = [.. BuyGamesLedger.Of(bot.Name).All
+			.Where(static e => !e.Pending && (e.Apps != null))
+			.SelectMany(static e => e.Apps!)];
+
 		return await MakeAsync(bot.Cfg, wallet.Currency, wallet.Balance, BuyGamesLedger.Of(bot.Name), store ?? new SteamGameStore(bot),
-			app => bot.Library.Find(app) is not null, SetFinder.Shared.Known(now), now, ct, levelCents).ConfigureAwait(false);
+			app => (bot.Library.Find(app) is not null) || packed.Contains(app), SetFinder.Shared.Known(now), now, ct, levelCents).ConfigureAwait(false);
 	}
 
 	/// <summary>"Always keep in the wallet" for games, in cents (0: off).</summary>

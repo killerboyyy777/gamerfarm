@@ -204,11 +204,14 @@ public sealed class GameBuyer(Bot bot) : BotModule(bot) {
 
 			if (answer.Result == GameBuyResult.Done) {
 				long cost = answer.PaidCents > 0 ? answer.PaidCents : candidate.PriceCents;
-				ledger.Replace(pending, pending with { Cents = cost, Pending = false, TransId = answer.TransId });
+				ledger.Replace(pending, pending with { Cents = cost, Pending = false, TransId = answer.TransId, Apps = answer.Apps?.ToArray() });
 				bought++;
 				paid += cost;
-				lines.Add($"{name}: bought {candidate.Name} (app {candidate.App}) for {M(cost)} - paid from the wallet balance");
-				Log.Info(new Said("{0}: bought {1} (app {2}) for {3}", name, candidate.Name, candidate.App, M(cost)), name);
+				string boughtName = answer.PackageName is { Length: > 0 } packName ? packName : candidate.Name;
+				int packApps = answer.Apps?.Count ?? 1;
+				string packSaid = packApps > 1 ? $" - a pack of {packApps} apps" : "";
+				lines.Add($"{name}: bought {boughtName} (app {candidate.App}) for {M(cost)} - paid from the wallet balance{packSaid}");
+				Log.Info(new Said("{0}: bought {1} (app {2}) for {3}{4}", name, boughtName, candidate.App, M(cost), packSaid), name);
 
 				// The free DLC that comes with what was just bought, when the account takes all free DLC. Never a reason
 				// to fail the purchase: the game is already on the account.
