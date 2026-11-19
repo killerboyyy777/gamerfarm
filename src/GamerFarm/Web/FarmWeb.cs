@@ -228,6 +228,9 @@ public static class FarmWeb {
 			// Trading cards: buying, crafting and packs within the app's own limits (which only change here)
 			["cards"] = Always, ["drops"] = Always, ["sets"] = Always, ["addmoney"] = Always, ["booster"] = Always, ["craft"] = Always,
 			["buy"] = Always, ["levelup"] = Always,
+			// Buying games with the wallet: looking and turning it off are fine; turning it on, probing the real checkout
+			// and buying now are the owner's word (the same lines Commands.Games.cs keeps from Steam chat).
+			["games"] = static (_, w) => !w.Any(static a => a is "on" or "do" or "now" or "probe" or "yes" or "ok"),
 			["match"] = static (_, w) => !Has(w, "do"),   // sending trade offers
 			["sell"] = static (_, w) => !Has(w, "do") && !Has(w, "relist"),   // listing items on the market
 			["spare"] = static (_, w) => !Has(w, "do") && !Has(w, "now"),   // selling or packing them now ('now' is 'do'); the switch itself may change

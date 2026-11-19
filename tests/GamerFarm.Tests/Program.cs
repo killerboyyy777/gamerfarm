@@ -30982,7 +30982,7 @@ await SignInLinkChecks.RunAsync(Check, Path.Combine(AppContext.BaseDirectory, ".
 	byte[] then = Then(now);
 	List<string> thenRefs = Refs(then);
 	Check("old plugin: built before 2.0.1, it names nocatFarm and implements INocatPlugin",
-		thenRefs.Contains("nocatFarm") && !thenRefs.Contains("gamerFarm") && thenRefs.Contains("GamerFarm.Plugins.INocatPlugin")
+		thenRefs.Contains("nocatFarm") && !thenRefs.Contains("gamerFarm") && thenRefs.Contains("NocatFarm.Plugins.INocatPlugin")
 		&& !thenRefs.Any(static r => r.StartsWith("GamerFarm.", StringComparison.Ordinal)));
 	byte[]? back = GamerFarm.Plugins.PluginHost.Retarget(then);
 	Check("old plugin: the loader makes it this version's - byte for byte the one built for it", (back != null) && back.SequenceEqual(now));
@@ -41501,7 +41501,8 @@ static class FarmWebChecks {
 		string[] refused = [
 			"confirm main 1", "confirm main all", "deny main 1", "/confirm main 1", "!deny main all", "2fa", "2fa main", "guard main",
 			"trade accept main 1", "trade decline main all", "trade cancel main all", "send main", "send main to alt", "loot main",
-			"swaps on main", "spare do main", "gems do main", "sell main do", "sell main relist 5", "match do", "keys", "keys clear",
+			"swaps on main", "spare do main", "gems do main", "games do main", "games on main yes", "games probe main 562360",
+			"sell main do", "sell main relist 5", "match do", "keys", "keys clear",
 			"remove main", "delete main", "add x y", "add x qr human", "scamwatch ok main", "scam ok main",
 			"update accept", "update now", "update to 1.9.0", "update file C:\\x.zip", "addons install rep4rep", "addon remove rep4rep",
 			"answer 12345", "dashboard unlock", "dashboard anywhere on", "web unlock", "anywhere on", "remote on", "notify link", "steam open main",
@@ -41522,6 +41523,7 @@ static class FarmWebChecks {
 			"sets", "addmoney main 100", "match", "sell main", "sell main preview", "booster", "booster all", "booster plan all", "booster open all",
 			"booster main 730", "booster open main do", "spare preview all", "spare on main", "spare off main", "gems on main", "craft preview main", "craft now main",
 			"buy", "buy preview all", "buy on main", "buy do main", "buy off main", "levelup main 50", "levelup main 50 buy yes", "lvlup main stop",
+			"games", "games preview main", "games off main",
 			"offers", "swaps", "swaps preview main", "swaps off main", "swaps sync", "confirmations", "confirmations main", "achievements main 730",
 			"achievements main 730 unlock all", "ach main 730 lock all", "hunt main", "dlc main", "dlc leave main 730", "dlc undo main 730",
 			"freegames", "freeitems all", "queue", "events", "redeem AAAAA-BBBBB-CCCCC", "addlicense main 123", "value refresh", "level", "balance", "bans", "health",
