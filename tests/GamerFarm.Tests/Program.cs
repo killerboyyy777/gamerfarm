@@ -42670,3 +42670,4 @@ sealed class ScriptedCheckoutWeb : NocatFarm.Core.IGameCheckoutWeb {
 
 	public override string ToString() => $"added {Added}, init {Initialized}, final {Finalized}, cleared {Cleared}, balance {Balance}";
 }
+}
