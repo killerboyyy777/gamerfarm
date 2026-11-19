@@ -1,9 +1,9 @@
 using System.Globalization;
-using NocatFarm.Config;
-using NocatFarm.Core;
-using NocatFarm.Modules;
+using GamerFarm.Config;
+using GamerFarm.Core;
+using GamerFarm.Modules;
 
-namespace NocatFarm;
+namespace GamerFarm;
 
 /// <summary>
 /// 'games': buying Steam games with the wallet balance - Modules/GameAdvisor.cs decides what, Core/GameCheckout.cs pays

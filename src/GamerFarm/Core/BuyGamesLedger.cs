@@ -1,7 +1,7 @@
 using System.Text.Json;
-using NocatFarm.Config;
+using GamerFarm.Config;
 
-namespace NocatFarm.Core;
+namespace GamerFarm.Core;
 
 /// <summary>
 /// What buying games has spent, per account - for the day's and the week's limits, and so they survive a restart - and

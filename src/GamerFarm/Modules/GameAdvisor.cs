@@ -1,7 +1,7 @@
-using NocatFarm.Config;
-using NocatFarm.Core;
+using GamerFarm.Config;
+using GamerFarm.Core;
 
-namespace NocatFarm.Modules;
+namespace GamerFarm.Modules;
 
 /// <summary>
 /// Which games buying would buy now, read only: the wallet balance, the day's and the week's limits, and every game it

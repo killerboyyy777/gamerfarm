@@ -1,8 +1,8 @@
 using System.Globalization;
 using System.Text.Json;
-using NocatFarm.Modules;
+using GamerFarm.Modules;
 
-namespace NocatFarm.Core;
+namespace GamerFarm.Core;
 
 /// <summary>
 /// Buying one game from the Steam wallet, the way ASFEnhance does it (October 2026): the account cart, the checkout's

@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace NocatFarm.Core;
+namespace GamerFarm.Core;
 
 /// <summary>One game as the Steam store prices it right now, for deciding whether it's worth buying.</summary>
 /// <param name="PriceCents">What it costs in <paramref name="Currency"/> (the store's own price for the account's country); 0 when it shows none.</param>
@@ -132,7 +132,7 @@ public sealed class SteamGameStore(Bot bot) : IGameStore {
 	/// cart item whose price covers every game in it, so the per-game cap doesn't apply to it.</summary>
 	public Task<GamePurchase> BuyAsync(StoreGame game, CancellationToken ct) =>
 		new GameCheckout(new BotCheckoutWeb(bot),
-			(game.BundleApps is { Count: > 0 }) || game.PackageId is not null ? 0 : NocatFarm.Modules.BuyPlan.Cents(bot.Cfg.BuyGamesMaxPrice)).BuyAsync(game, ct);
+			(game.BundleApps is { Count: > 0 }) || game.PackageId is not null ? 0 : GamerFarm.Modules.BuyPlan.Cents(bot.Cfg.BuyGamesMaxPrice)).BuyAsync(game, ct);
 
 	/// <summary>Store page reads for the profile-count notice, kept a week per app - it changes with the app, not a look.</summary>
 	private static readonly System.Collections.Concurrent.ConcurrentDictionary<uint, (bool Counts, DateTime At)> ProfileKept = new();

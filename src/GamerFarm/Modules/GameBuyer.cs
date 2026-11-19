@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
-using NocatFarm.Config;
-using NocatFarm.Core;
-using NocatFarm;
+using GamerFarm.Config;
+using GamerFarm.Core;
+using GamerFarm;
 
-namespace NocatFarm.Modules;
+namespace GamerFarm.Modules;
 
 /// <summary>
 /// Buying games by itself, every "Look for games to buy every" hours, once buying games has its go-ahead and
