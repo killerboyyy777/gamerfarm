@@ -13898,6 +13898,147 @@ if (Environment.GetEnvironmentVariable("NOCAT_BANPAGES") is { Length: > 0 } banP
 	}
 }
 
+// ── a retired search endpoint: its 404 refuses searches, never pauses a listing's priceoverview ────────────────────
+{
+	const BindingFlags All = BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static | BindingFlags.Instance;
+	Type pb = typeof(GamerFarm.PriceBook);
+	string realRoot = GamerFarm.Config.ConfigStore.Root;
+	GamerFarm.Config.GlobalConfig liveBefore = GamerFarm.Config.Live.Global;
+	var getBefore = GamerFarm.Core.SparePrices.Get;
+	string tmpRoot = Path.Combine(Path.GetTempPath(), "nf-search404-" + Guid.NewGuid().ToString("N"));
+	FieldInfo F(string n) => pb.GetField(n, All)!;
+	T Field<T>(string n) => (T) F(n).GetValue(null)!;
+	PropertyInfo gapP = pb.GetProperty("GapForTests", All)!;
+	object httpBefore = F("Http").GetValue(null)!, httpBBefore = F("HttpB").GetValue(null)!;
+	string host = GamerFarm.Core.WebSession.Community.Host;
+	string sack = GamerFarm.Core.SparePrices.SackHash;
+	const string SearchPath = "/market/search/render/?norender=1&appid=753&start=0&count=100&currency=1";
+	const string Quote = """{"success":true,"lowest_price":"$1.23","median_price":"$1.20","volume":"16"}""";
+	const string SearchPage = """{"success":true,"pagesize":10,"total_count":0,"results":[]}""";
+
+	void OpenHost() {
+		((System.Collections.IDictionary) typeof(GamerFarm.Core.Limiters).GetField("WebBackoff", All)!.GetValue(null)!).Remove(host);
+		GamerFarm.Core.Limiters.Remember(host, DateTime.MinValue, 0);
+	}
+
+	List<(char Way, string Path)> sent = [];
+	Func<HttpRequestMessage, HttpResponseMessage> answer = static _ => new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+	FakePing Client(char way) => new((request, _) => {
+		lock (sent) sent.Add((way, request.RequestUri!.AbsolutePath));
+		return Task.FromResult(answer(request));
+	});
+	string Ways() {
+		lock (sent) return string.Concat(sent.Select(static s => s.Way));
+	}
+	HttpResponseMessage Json(string body) => new(System.Net.HttpStatusCode.OK) { Content = new StringContent(body) };
+	HttpResponseMessage Status(System.Net.HttpStatusCode code) => new(code);
+	bool IsSearch(HttpRequestMessage r) => r.RequestUri!.AbsolutePath.StartsWith("/market/search/", StringComparison.Ordinal);
+
+	void Fresh() {
+		OpenHost();
+		F("_coolLoaded").SetValue(null, true);
+		F("_coolUntil").SetValue(null, DateTime.MinValue);
+		F("_coolSeconds").SetValue(null, 0);
+		F("_saidRefused").SetValue(null, false);
+		F("_way").SetValue(null, 0);
+		F("_goodWay").SetValue(null, 0);
+		F("_refusedInRow").SetValue(null, 0);
+		F("_checkFirst").SetValue(null, false);
+		F("_searchOffUntil").SetValue(null, DateTime.MinValue);
+		F("_searchOffMinutes").SetValue(null, 0);
+		F("_searchDoubt").SetValue(null, -1);
+		F("_lastCall").SetValue(null, DateTime.MinValue);
+		Array.Fill((DateTime[]) F("AnsweredAt").GetValue(null)!, DateTime.MinValue);
+		((System.Collections.IDictionary) F("Suspects").GetValue(null)!).Clear();
+		F("_marketDown").SetValue(null, false);
+		GamerFarm.PriceBook.ForListing.Value = false;
+		GamerFarm.Core.SparePrices.Get = GamerFarm.PriceBook.MarketGetAsync;
+		GamerFarm.Core.MarketQuotes.Reset();
+		GamerFarm.Core.Limiters.Remember("market", DateTime.MinValue, 0);
+		GamerFarm.Core.Limiters.Remember("market-way", DateTime.UtcNow, 0);
+		lock (sent) sent.Clear();
+		answer = r => IsSearch(r) ? Status(System.Net.HttpStatusCode.NotFound) : Json(Quote);
+	}
+
+	async Task<GamerFarm.Core.MarketQuote?> Listing(string hash) {
+		GamerFarm.PriceBook.ForListing.Value = true;
+		try { return await GamerFarm.Core.MarketQuotes.FetchAsync(hash, 1, CancellationToken.None).ConfigureAwait(false); }
+		finally { GamerFarm.PriceBook.ForListing.Value = false; }
+	}
+
+	try {
+		GamerFarm.Config.ConfigStore.UseRoot(tmpRoot);
+		GamerFarm.Config.Live.Global = new GamerFarm.Config.GlobalConfig { MarketGapSeconds = 8, WebRequestGapMs = 0 };
+		gapP.SetValue(null, 0d);
+		F("Http").SetValue(null, new HttpClient(Client('A')));
+		F("HttpB").SetValue(null, new HttpClient(Client('B')));
+
+		// 1. The retired search page 404s on the way that hasn't answered: one refused search, no global pause.
+		Fresh();
+		bool shortlist = await GamerFarm.Core.SparePrices.PriceGameAsync(753, CancellationToken.None);
+		bool searchRefused = !shortlist && (GamerFarm.PriceBook.PausedUntil == null) && (Field<DateTime>("_coolUntil") == DateTime.MinValue)
+			&& (Field<int>("_coolSeconds") == 0) && (Field<int>("_searchDoubt") >= 0) && (Ways() == "A") && (sent.Count == 1) && (Field<int>("_way") == 0);
+		Check("market: a retired search's 404 refuses that search without flipping ways or pausing price lookups",
+			searchRefused, $"{Ways()}, pause {GamerFarm.PriceBook.PausedUntil}, doubt {Field<int>("_searchDoubt")}");
+
+		// The sack's final reprice is a priceoverview on the other way: it is answered, and searches alone go off.
+		GamerFarm.Core.MarketQuote? listing = await Listing(sack);
+		bool repriced = (listing?.Lowest == 123) && (Ways() == "AB") && (sent.Count == 2) && (sent[1].Path == "/market/priceoverview/")
+			&& (GamerFarm.PriceBook.PausedUntil == null) && GamerFarm.PriceBook.SearchOff && (Field<int>("_searchOffMinutes") == 30);
+		Check("market: a sack's listing reprice still gets its price after a search 404 - only searches go off", repriced, $"{Ways()}, pause {GamerFarm.PriceBook.PausedUntil}");
+
+		// 2. The same 404 from a way that had just answered must not step into the market's ladder either.
+		F("_searchOffUntil").SetValue(null, DateTime.MinValue);
+		F("_searchOffMinutes").SetValue(null, 0);
+		lock (sent) sent.Clear();
+		await GamerFarm.Core.SparePrices.PriceGameAsync(753, CancellationToken.None);
+		bool answeringWay = (GamerFarm.PriceBook.PausedUntil == null) && (Field<int>("_coolSeconds") == 0) && (Field<int>("_way") == 1)
+			&& (Field<int>("_searchDoubt") == 1) && (Ways() == "B") && (sent.Count == 1);
+		Check("market: a search 404 on the way that was answering still refuses searches without a pause", answeringWay, $"{Ways()}, pause {GamerFarm.PriceBook.PausedUntil}");
+
+		GamerFarm.Core.MarketQuote? second = await Listing(sack);
+		Check("market: a listing priceoverview is still answered after that 404 too",
+			(second?.Lowest == 123) && (GamerFarm.PriceBook.PausedUntil == null) && (Ways() == "BB") && (sent.Count == 2), $"{Ways()}, pause {GamerFarm.PriceBook.PausedUntil}");
+
+		// 3. A 404 on priceoverview itself is market-wide trouble: it still pauses every market request.
+		Fresh();
+		answer = r => IsSearch(r) ? Json(SearchPage) : Status(System.Net.HttpStatusCode.NotFound);
+		GamerFarm.Core.MarketQuote? gone = await Listing(sack);
+		bool trouble404 = (gone == null) && (GamerFarm.PriceBook.PausedUntil is { } until404) && (until404 > DateTime.UtcNow.AddSeconds(110))
+			&& (Field<int>("_coolSeconds") == 0) && (Ways() == "A") && (sent.Count == 1);
+		(string? held, bool heldSent) = await GamerFarm.PriceBook.MarketGetAsync(SearchPath, CancellationToken.None);
+		GamerFarm.Core.MarketQuote? heldQuote = await Listing(sack);
+		Check("market: a priceoverview 404 still pauses every market request, listings and searches alike",
+			trouble404 && (held == null) && !heldSent && (heldQuote == null) && (sent.Count == 1), $"{Ways()}, pause {GamerFarm.PriceBook.PausedUntil}");
+
+		// 4. So does a genuine 429, with the refusal ladder still starting at 90 seconds.
+		Fresh();
+		answer = r => IsSearch(r) ? Json(SearchPage) : Status(System.Net.HttpStatusCode.TooManyRequests);
+		GamerFarm.Core.MarketQuote? refused = await Listing(sack);
+		bool trouble429 = (refused == null) && (GamerFarm.PriceBook.PausedUntil is { } until429) && (until429 > DateTime.UtcNow.AddSeconds(85))
+			&& (Field<int>("_coolSeconds") == 90) && (Ways() == "AB") && (sent.Count == 2);
+		Check("market: a priceoverview 429 still pauses everything and starts the ladder at 90 seconds", trouble429,
+			$"{Ways()}, step {Field<int>("_coolSeconds")}s, pause {GamerFarm.PriceBook.PausedUntil}");
+	} finally {
+		GamerFarm.PriceBook.ForListing.Value = false;
+		GamerFarm.Core.SparePrices.Get = getBefore;
+		GamerFarm.Core.MarketQuotes.Reset();
+		OpenHost();
+		F("Http").SetValue(null, httpBefore);
+		F("HttpB").SetValue(null, httpBBefore);
+		gapP.SetValue(null, null);
+		F("_coolUntil").SetValue(null, DateTime.MinValue);
+		F("_coolSeconds").SetValue(null, 0);
+		F("_saidRefused").SetValue(null, false);
+		F("_searchOffUntil").SetValue(null, DateTime.MinValue);
+		F("_searchDoubt").SetValue(null, -1);
+		GamerFarm.Core.Limiters.Remember("market", DateTime.MinValue, 0);
+		GamerFarm.Config.Live.Global = liveBefore;
+		GamerFarm.Config.ConfigStore.UseRoot(realRoot);
+		try { Directory.Delete(tmpRoot, true); } catch (IOException) { }
+	}
+}
+
 // ── market prices ask as "gamer.farm/<version>": the market answers 429 to the browser string every time ─────────
 {
 	var market = GamerFarm.Core.Browser.Market(TimeSpan.FromSeconds(5));

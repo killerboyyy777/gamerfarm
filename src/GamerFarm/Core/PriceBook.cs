@@ -843,6 +843,19 @@ public static partial class PriceBook {
 			return (null, Refused(way, search), false);
 		}
 
+		// A retired search endpoint answers 404 for good, not only while Steam is unwell: that search is refused, but
+		// not by the way it was asked - flipping ways would only send the next single lookup somewhere that doesn't
+		// match the doubt, so leave searches to that lookup (see Answered and SearchOff). This is NOT a pause of every
+		// market lookup: priceoverview still answers, and a sale waiting on its price must not be frozen for two minutes
+		// by a shortlist request (live, 2026-11: /market/search/render/ 404s while "753-Sack of Gems" has real prices).
+		// A 404 on priceoverview is still the market's trouble below.
+		if ((response.StatusCode == HttpStatusCode.NotFound) && search) {
+			_searchDoubt = way;
+			Log.Debug(new Said("the market no longer has this search page (404) - the next request asks for one item, to see whether it's only searches"));
+
+			return (null, true, false);
+		}
+
 		// Not a refusal - Steam's own trouble, a 500 or a 502, or an answer with nothing in it: a couple of minutes, and no
 		// step up the ladder. During Steam's maintenance every request answers like this, whatever it asks about: counted
 		// against each item asked, eleven of thirteen were set aside for six hours one by one, the most valuable first.
